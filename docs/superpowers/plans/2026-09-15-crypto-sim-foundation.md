@@ -1609,7 +1609,7 @@ def exposure_time_pct(snapshots: list[PortfolioSnapshot]) -> Decimal:
 - [ ] **Step 5: Run tests to verify they pass**
 
 Run: `pytest tests/test_analytics.py -v`
-Expected: PASS (11 passed)
+Expected: PASS (10 passed)
 
 - [ ] **Step 6: Commit**
 
@@ -1834,7 +1834,7 @@ def monthly_returns(snapshots: list[PortfolioSnapshot]) -> dict[str, Decimal]:
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `pytest tests/test_analytics.py -v`
-Expected: PASS (21 passed)
+Expected: PASS (20 passed)
 
 - [ ] **Step 5: Commit**
 
