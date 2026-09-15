@@ -44,6 +44,7 @@ class Config:
     fees: FeesConfig
     live: LiveConfig
     snapshots: SnapshotsConfig
+    strategy_defaults: dict
 
 
 def load_config(path: str | Path = "config.yaml") -> Config:
@@ -68,4 +69,5 @@ def load_config(path: str | Path = "config.yaml") -> Config:
         snapshots=SnapshotsConfig(
             retention_detail_days=int(raw["snapshots"]["retention_detail_days"])
         ),
+        strategy_defaults=dict(raw["strategy_defaults"]),
     )

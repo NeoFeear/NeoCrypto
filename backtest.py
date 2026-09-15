@@ -167,12 +167,7 @@ def main() -> None:
     raw_rows: list[dict] = []
     analytics_rows: list[dict] = []
 
-    strategy_params = {
-        "buy_hold": {"invest_at": "start"},
-        "dca": {"amount_per_buy": 50, "frequency_hours": 24, "reference_price": "close"},
-        "grid": {"lower_bound": 25000, "upper_bound": 35000, "n_levels": 10,
-                 "spacing": "geometric", "order_size_quote": 100},
-    }
+    strategy_params = cfg.strategy_defaults
 
     for symbol in passing:
         klines = download_backtest_klines(

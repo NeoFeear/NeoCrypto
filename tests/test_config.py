@@ -27,6 +27,19 @@ live:
   poll_kline_interval: 5m
 snapshots:
   retention_detail_days: 30
+strategy_defaults:
+  buy_hold:
+    invest_at: start
+  dca:
+    amount_per_buy: 50
+    frequency_hours: 24
+    reference_price: close
+  grid:
+    lower_bound: 25000
+    upper_bound: 35000
+    n_levels: 10
+    spacing: geometric
+    order_size_quote: 100
 """,
         encoding="utf-8",
     )
@@ -44,3 +57,8 @@ snapshots:
     assert cfg.live.poll_interval_seconds == 300
     assert cfg.live.poll_kline_interval == "5m"
     assert cfg.snapshots.retention_detail_days == 30
+    assert cfg.strategy_defaults == {
+        "buy_hold": {"invest_at": "start"},
+        "dca": {"amount_per_buy": 50, "frequency_hours": 24, "reference_price": "close"},
+        "grid": {"lower_bound": 25000, "upper_bound": 35000, "n_levels": 10, "spacing": "geometric", "order_size_quote": 100},
+    }
