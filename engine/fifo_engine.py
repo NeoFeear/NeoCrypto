@@ -57,6 +57,19 @@ class FifoEngine:
         total_qty = sum((lot.quantity_restante for lot in self.get_lots(symbol)), Decimal("0"))
         return total_qty * current_price
 
+    def unrealized_pnl(self, symbol: str, current_price: Decimal) -> Decimal:
+        return sum(
+            ((current_price - lot.prix_achat) * lot.quantity_restante for lot in self.get_lots(symbol)),
+            Decimal("0"),
+        )
+
+    def realized_pnl_cumule(self, symbol: str | None = None) -> Decimal:
+        sells = [
+            t for t in self.trades
+            if t.side == Side.SELL and t.realized_pnl is not None and (symbol is None or t.symbol == symbol)
+        ]
+        return sum((t.realized_pnl for t in sells), Decimal("0"))
+
     def buy(
         self, timestamp: int, symbol: str, price: Decimal, quantity: Decimal, strategy_name: str
     ) -> Trade | None:

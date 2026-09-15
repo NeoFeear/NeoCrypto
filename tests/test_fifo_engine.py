@@ -164,3 +164,44 @@ def test_sell_exceeding_available_quantity_is_rejected_in_full_not_partial(caplo
     lots = engine.get_lots("BTCUSDT")
     assert len(lots) == 1
     assert lots[0].quantity_restante == Decimal("1")
+
+
+def test_unrealized_pnl_sums_open_lots_at_current_price():
+    engine = FifoEngine(initial_cash=Decimal("10000"), fee_pct=Decimal("0.001"))
+    engine.buy(timestamp=1000, symbol="BTCUSDT", price=Decimal("100"), quantity=Decimal("2"), strategy_name="t")
+    engine.buy(timestamp=2000, symbol="BTCUSDT", price=Decimal("110"), quantity=Decimal("3"), strategy_name="t")
+
+    unrealized = engine.unrealized_pnl("BTCUSDT", current_price=Decimal("120"))
+
+    # (120-100)*2 + (120-110)*3 = 40 + 30 = 70
+    assert unrealized == Decimal("70")
+
+
+def test_unrealized_pnl_is_zero_with_no_open_lots():
+    engine = FifoEngine(initial_cash=Decimal("1000"), fee_pct=Decimal("0.001"))
+    assert engine.unrealized_pnl("BTCUSDT", current_price=Decimal("100")) == Decimal("0")
+
+
+def test_realized_pnl_cumule_accumulates_across_sells():
+    engine = FifoEngine(initial_cash=Decimal("10000"), fee_pct=Decimal("0.001"))
+    engine.buy(timestamp=1000, symbol="BTCUSDT", price=Decimal("100"), quantity=Decimal("2"), strategy_name="t")
+    engine.buy(timestamp=2000, symbol="BTCUSDT", price=Decimal("110"), quantity=Decimal("3"), strategy_name="t")
+
+    assert engine.realized_pnl_cumule("BTCUSDT") == Decimal("0")
+
+    engine.sell(timestamp=3000, symbol="BTCUSDT", price=Decimal("130"), quantity=Decimal("2"), strategy_name="t")
+    # (130-100)*2 - fee(260*0.001=0.26) = 60 - 0.26 = 59.74
+    assert engine.realized_pnl_cumule("BTCUSDT") == Decimal("59.74")
+
+    engine.sell(timestamp=4000, symbol="BTCUSDT", price=Decimal("140"), quantity=Decimal("1"), strategy_name="t")
+    # (140-110)*1 - fee(140*0.001=0.14) = 30 - 0.14 = 29.86
+    # cumulative: 59.74 + 29.86 = 89.60
+    assert engine.realized_pnl_cumule("BTCUSDT") == Decimal("89.60")
+
+
+def test_realized_pnl_cumule_with_no_symbol_filter_sums_everything():
+    engine = FifoEngine(initial_cash=Decimal("10000"), fee_pct=Decimal("0.001"))
+    engine.buy(timestamp=1000, symbol="BTCUSDT", price=Decimal("100"), quantity=Decimal("1"), strategy_name="t")
+    engine.sell(timestamp=2000, symbol="BTCUSDT", price=Decimal("110"), quantity=Decimal("1"), strategy_name="t")
+
+    assert engine.realized_pnl_cumule() == engine.realized_pnl_cumule("BTCUSDT")
