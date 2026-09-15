@@ -26,7 +26,7 @@ provider, valorisation moteur, `trade_stats`, couverture pagination).
 - [x] Task 1 — Provider factory (`market_data/factory.py`)
 - [x] Task 2 — Valorisation moteur FIFO (`unrealized_pnl`, `realized_pnl_cumule`)
 - [x] Task 3 — `analytics.trade_stats()` + refactor `expectancy()` (1 correctif : déduplication du prédicat sell sur 3 fonctions)
-- [x] Task 4 — Filtre de liquidité (`liquidity.py`)
+- [x] Task 4 — Filtre de liquidité (`liquidity.py`) (1 correctif : limite exacte du spread non testée)
 - [ ] Task 5 — Stratégie Buy & Hold
 - [ ] Task 6 — Stratégie DCA
 - [ ] Task 7 — Grid : construction des niveaux
@@ -46,6 +46,9 @@ provider, valorisation moteur, `trade_stats`, couverture pagination).
   `download_backtest_klines` (WARNING si < 95% des bougies attendues) —
   ferme le manque de pagination laissé en suspens par la revue finale
   du Plan 1.
+- Task 4 : la limite exacte du spread (`spread_bps == max_spread_bps`)
+  n'était pas testée (seulement un cas largement au-dessus) — 1
+  correctif pour ajouter le test à la limite exacte.
 
 ## À venir
 
