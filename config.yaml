@@ -1,0 +1,26 @@
+data_source: binance
+
+watchlist:
+  - BTCUSDT
+  - ETHUSDT
+  - SOLUSDT
+  - BNBUSDT
+
+liquidity:
+  min_quote_volume_24h: 50000000
+  max_spread_bps: 10
+
+backtest:
+  initial_capital: 1000
+  interval: 1h
+  lookback_days: 90
+
+fees:
+  default_fee_pct: 0.001
+
+live:
+  poll_interval_seconds: 300
+  poll_kline_interval: 5m
+
+snapshots:
+  retention_detail_days: 30
