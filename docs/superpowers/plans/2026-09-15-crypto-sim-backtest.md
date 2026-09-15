@@ -184,7 +184,7 @@ Expected: FAIL — `AttributeError: 'FifoEngine' object has no attribute 'unreal
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `pytest tests/test_fifo_engine.py -v`
-Expected: PASS (12 passed)
+Expected: PASS (13 passed)
 
 - [ ] **Step 5: Commit**
 
