@@ -30,7 +30,7 @@ provider, valorisation moteur, `trade_stats`, couverture pagination).
 - [x] Task 5 — Stratégie Buy & Hold + helper `build_snapshot` partagé
 - [x] Task 6 — Stratégie DCA (1 correctif : ZeroDivisionError si fréquence < intervalle de bougie)
 - [x] Task 7 — Grid : construction des niveaux (1 correctif : bornes non exactes en spacing géométrique pour des ratios non-rationnels)
-- [ ] Task 8 — Grid : logique de déclenchement (D1-D3)
+- [x] Task 8 — Grid : logique de déclenchement (D1-D3) (1 correctif majeur : le code de référence du plan lui-même contredisait son propre test D3 — niveaux adjacents partagent une borne de prix, garde anti-aller-retour-même-bougie ajoutée et documentée)
 - [ ] Task 9 — `backtest.py` : sélection watchlist + téléchargement
 - [ ] Task 10 — `backtest.py` : orchestration du rejeu de stratégies
 - [ ] Task 11 — `backtest.py` : construction des lignes de rapport
