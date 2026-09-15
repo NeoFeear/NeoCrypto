@@ -65,3 +65,14 @@ def test_dca_rejected_buy_is_logged_not_raised():
     # buy0: total_cost=50.05, cash=60-50.05=9.95 ; buy1,buy2: total_cost=50.05 > 9.95, rejected
     assert len(engine.trades) == 1
     assert engine.cash_balance == Decimal("9.95")
+
+
+def test_dca_frequency_shorter_than_interval_buys_every_candle_no_crash():
+    engine = FifoEngine(initial_cash=Decimal("10000"), fee_pct=Decimal("0.001"))
+    klines = [_kline(i * 14_400_000, "100") for i in range(3)]  # 4h candles
+
+    run_dca(klines, engine, "BTCUSDT",
+            params={"amount_per_buy": 50, "frequency_hours": 1, "reference_price": "close"},
+            interval_hours=4)
+
+    assert len(engine.trades) == 3  # clamped to 1 -> buys every candle, no crash

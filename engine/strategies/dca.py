@@ -14,7 +14,7 @@ def run_dca(
     only value the spec's schema defines)."""
     amount_per_buy = Decimal(str(params["amount_per_buy"]))
     frequency_hours = int(params["frequency_hours"])
-    candles_per_buy = frequency_hours // interval_hours
+    candles_per_buy = max(1, frequency_hours // interval_hours)
 
     snapshots: list[PortfolioSnapshot] = []
     for i, k in enumerate(klines):
