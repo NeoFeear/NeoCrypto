@@ -29,7 +29,7 @@ provider, valorisation moteur, `trade_stats`, couverture pagination).
 - [x] Task 4 — Filtre de liquidité (`liquidity.py`) (1 correctif : limite exacte du spread non testée)
 - [x] Task 5 — Stratégie Buy & Hold + helper `build_snapshot` partagé
 - [x] Task 6 — Stratégie DCA (1 correctif : ZeroDivisionError si fréquence < intervalle de bougie)
-- [ ] Task 7 — Grid : construction des niveaux
+- [x] Task 7 — Grid : construction des niveaux (1 correctif : bornes non exactes en spacing géométrique pour des ratios non-rationnels)
 - [ ] Task 8 — Grid : logique de déclenchement (D1-D3)
 - [ ] Task 9 — `backtest.py` : sélection watchlist + téléchargement
 - [ ] Task 10 — `backtest.py` : orchestration du rejeu de stratégies
