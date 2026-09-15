@@ -37,3 +37,9 @@ def test_build_grid_levels_accepts_int_and_float_params_without_float_leak():
     assert isinstance(levels[0].buy_price, Decimal)
     assert levels[0].buy_price == Decimal("25000")
     assert levels[-1].sell_price == Decimal("35000")
+
+
+def test_build_grid_levels_geometric_endpoints_are_exact_even_with_irrational_ratio():
+    levels = build_grid_levels(lower_bound=3, upper_bound=10, n_levels=5, spacing="geometric")
+    assert levels[0].buy_price == Decimal("3")
+    assert levels[-1].sell_price == Decimal("10")

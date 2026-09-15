@@ -24,4 +24,8 @@ def build_grid_levels(lower_bound, upper_bound, n_levels: int, spacing: str) -> 
     else:
         raise ValueError(f"spacing inconnu: {spacing}")
 
+    # Force exact endpoints to guard against rounding errors in irrational ratio exponents
+    boundaries[0] = lower
+    boundaries[-1] = upper
+
     return [GridLevel(buy_price=boundaries[i], sell_price=boundaries[i + 1]) for i in range(n)]
