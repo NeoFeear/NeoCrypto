@@ -1,4 +1,5 @@
 # analytics.py
+from datetime import datetime, timezone
 from decimal import Decimal
 
 from engine.fifo_engine import Side, Trade
@@ -88,3 +89,97 @@ def exposure_time_pct(snapshots: list[PortfolioSnapshot]) -> Decimal:
         return Decimal("0")
     exposed = sum(1 for s in snapshots if s.position_value > 0)
     return Decimal(exposed) / Decimal(len(snapshots)) * Decimal(100)
+
+
+def _periodic_returns(snapshots: list[PortfolioSnapshot]) -> list[Decimal]:
+    ordered = sorted(snapshots, key=lambda s: s.timestamp)
+    return [
+        (ordered[i].total_value - ordered[i - 1].total_value) / ordered[i - 1].total_value
+        for i in range(1, len(ordered))
+    ]
+
+
+def _stdev(values: list[Decimal]) -> Decimal:
+    if not values:
+        return Decimal("0")
+    mean = sum(values, Decimal("0")) / Decimal(len(values))
+    variance = sum(((v - mean) ** 2 for v in values), Decimal("0")) / Decimal(len(values))
+    return variance.sqrt()
+
+
+def sharpe_ratio(snapshots: list[PortfolioSnapshot], periods_per_year: int) -> Decimal:
+    returns = _periodic_returns(snapshots)
+    if len(returns) < 2:
+        return Decimal("0")
+    mean_r = sum(returns, Decimal("0")) / Decimal(len(returns))
+    stdev = _stdev(returns)
+    if stdev == 0:
+        return Decimal("0")
+    return (mean_r / stdev) * Decimal(periods_per_year).sqrt()
+
+
+def sortino_ratio(snapshots: list[PortfolioSnapshot], periods_per_year: int) -> Decimal:
+    returns = _periodic_returns(snapshots)
+    if len(returns) < 2:
+        return Decimal("0")
+    mean_r = sum(returns, Decimal("0")) / Decimal(len(returns))
+    downside = [min(r, Decimal("0")) for r in returns]
+    downside_variance = sum((d * d for d in downside), Decimal("0")) / Decimal(len(downside))
+    downside_dev = downside_variance.sqrt()
+    if downside_dev == 0:
+        return Decimal("0")
+    return (mean_r / downside_dev) * Decimal(periods_per_year).sqrt()
+
+
+def calmar_ratio(cagr_value: Decimal, max_dd_pct: Decimal) -> Decimal:
+    if max_dd_pct == 0:
+        return Decimal("0")
+    return cagr_value / max_dd_pct
+
+
+def alpha_vs_buy_hold(strategy_return_pct: Decimal, buy_hold_return_pct: Decimal) -> Decimal:
+    return strategy_return_pct - buy_hold_return_pct
+
+
+def trade_distribution(trades: list[Trade], bucket_count: int = 10) -> list[dict]:
+    pnls = [t.realized_pnl for t in trades if t.side == Side.SELL and t.realized_pnl is not None]
+    if not pnls:
+        return []
+    lo, hi = min(pnls), max(pnls)
+    if lo == hi:
+        return [{"range_low": lo, "range_high": hi, "count": len(pnls)}]
+    width = (hi - lo) / Decimal(bucket_count)
+    buckets = [
+        {"range_low": lo + width * i, "range_high": lo + width * (i + 1), "count": 0}
+        for i in range(bucket_count)
+    ]
+    for pnl in pnls:
+        idx = int((pnl - lo) / width)
+        if idx >= bucket_count:
+            idx = bucket_count - 1
+        buckets[idx]["count"] += 1
+    return buckets
+
+
+def monthly_returns(snapshots: list[PortfolioSnapshot]) -> dict[str, Decimal]:
+    ordered = sorted(snapshots, key=lambda s: s.timestamp)
+    if not ordered:
+        return {}
+
+    def month_key(ts_ms: int) -> str:
+        dt = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc)
+        return f"{dt.year:04d}-{dt.month:02d}"
+
+    months: dict[str, list[PortfolioSnapshot]] = {}
+    for s in ordered:
+        months.setdefault(month_key(s.timestamp), []).append(s)
+
+    result: dict[str, Decimal] = {}
+    prev_last_value: Decimal | None = None
+    for key in sorted(months.keys()):
+        month_snaps = months[key]
+        start_value = prev_last_value if prev_last_value is not None else month_snaps[0].total_value
+        end_value = month_snaps[-1].total_value
+        result[key] = Decimal("0") if start_value == 0 else (end_value - start_value) / start_value * Decimal(100)
+        prev_last_value = end_value
+    return result

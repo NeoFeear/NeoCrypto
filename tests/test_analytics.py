@@ -105,3 +105,87 @@ def test_expectancy_matches_hand_computed_value():
 def test_exposure_time_pct():
     # 8 of 10 snapshots have position_value > 0 (indices 3,4 are flat cash)
     assert analytics.exposure_time_pct(_snapshots()) == Decimal("80.00")
+
+
+def test_sharpe_ratio_matches_hand_computed_value():
+    result = analytics.sharpe_ratio(_snapshots(), periods_per_year=365)
+    assert result.quantize(Decimal("0.0001")) == Decimal("7.1792")
+
+
+def test_sharpe_ratio_is_zero_when_stdev_is_zero():
+    flat = [
+        PortfolioSnapshot(
+            timestamp=T0 + i * DAY_MS, symbol="BTCUSDT",
+            cash_balance=Decimal("1000"), position_value=Decimal("0"),
+            total_value=Decimal("1000"), unrealized_pnl=Decimal("0"),
+            realized_pnl_cumule=Decimal("0"),
+        )
+        for i in range(3)
+    ]
+    assert analytics.sharpe_ratio(flat, periods_per_year=365) == Decimal("0")
+
+
+def test_sortino_ratio_matches_hand_computed_value():
+    result = analytics.sortino_ratio(_snapshots(), periods_per_year=365)
+    assert result.quantize(Decimal("0.0001")) == Decimal("8.8947")
+
+
+def test_calmar_ratio():
+    cagr_value = Decimal("851507.3801")
+    max_dd = Decimal("18.1818")
+    # cagr_value / max_dd using these already-rounded inputs (not the full-precision
+    # intermediates) — 851507.3801 / 18.1818
+    assert analytics.calmar_ratio(cagr_value, max_dd).quantize(Decimal("0.0001")) == Decimal("46832.9527")
+
+
+def test_calmar_ratio_zero_drawdown_returns_zero():
+    assert analytics.calmar_ratio(Decimal("10"), Decimal("0")) == Decimal("0")
+
+
+def test_alpha_vs_buy_hold():
+    assert analytics.alpha_vs_buy_hold(Decimal("25.00"), Decimal("18.50")) == Decimal("6.50")
+
+
+def test_trade_distribution_buckets_pnls():
+    trades = [_trade(Decimal("50")), _trade(Decimal("-20")), _trade(Decimal("80")),
+              _trade(Decimal("-30")), _trade(Decimal("10"))]
+
+    buckets = analytics.trade_distribution(trades, bucket_count=5)
+
+    assert len(buckets) == 5
+    assert [b["count"] for b in buckets] == [2, 1, 0, 1, 1]
+    assert buckets[0]["range_low"] == Decimal("-30")
+    assert buckets[4]["range_high"] == Decimal("80")
+    assert sum(b["count"] for b in buckets) == 5
+
+
+def test_trade_distribution_empty_when_no_sells():
+    assert analytics.trade_distribution([_trade(None, side=Side.BUY)]) == []
+
+
+def test_monthly_returns_buckets_by_calendar_month():
+    def ts(y, m, d):
+        return int(datetime(y, m, d, tzinfo=timezone.utc).timestamp() * 1000)
+
+    snaps = [
+        PortfolioSnapshot(timestamp=ts(2026, 1, 5), symbol="BTCUSDT", cash_balance=Decimal("0"),
+                           position_value=Decimal("1000"), total_value=Decimal("1000"),
+                           unrealized_pnl=Decimal("0"), realized_pnl_cumule=Decimal("0")),
+        PortfolioSnapshot(timestamp=ts(2026, 1, 25), symbol="BTCUSDT", cash_balance=Decimal("0"),
+                           position_value=Decimal("1100"), total_value=Decimal("1100"),
+                           unrealized_pnl=Decimal("0"), realized_pnl_cumule=Decimal("0")),
+        PortfolioSnapshot(timestamp=ts(2026, 2, 5), symbol="BTCUSDT", cash_balance=Decimal("0"),
+                           position_value=Decimal("1100"), total_value=Decimal("1100"),
+                           unrealized_pnl=Decimal("0"), realized_pnl_cumule=Decimal("0")),
+        PortfolioSnapshot(timestamp=ts(2026, 2, 25), symbol="BTCUSDT", cash_balance=Decimal("0"),
+                           position_value=Decimal("1210"), total_value=Decimal("1210"),
+                           unrealized_pnl=Decimal("0"), realized_pnl_cumule=Decimal("0")),
+    ]
+
+    result = analytics.monthly_returns(snaps)
+
+    assert result == {"2026-01": Decimal("10"), "2026-02": Decimal("10")}
+
+
+def test_monthly_returns_empty_for_no_snapshots():
+    assert analytics.monthly_returns([]) == {}
