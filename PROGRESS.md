@@ -35,7 +35,7 @@ provider, valorisation moteur, `trade_stats`, couverture pagination).
 - [x] Task 10 — `backtest.py` : orchestration du rejeu de stratégies
 - [x] Task 11 — `backtest.py` : construction des lignes de rapport
 - [x] Task 12 — `backtest.py` : export CSV + table console + `main()` (1 correctif : paramètres de stratégie en dur, déplacés dans `config.yaml`)
-- [ ] Task 13 — Vérification complète de la suite
+- [x] Task 13 — Vérification complète de la suite (93/93)
 
 ## Décisions / rulings notables (Plan 2)
 
