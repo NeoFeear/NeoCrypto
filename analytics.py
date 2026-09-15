@@ -61,20 +61,25 @@ def max_drawdown(snapshots: list[PortfolioSnapshot]) -> tuple[Decimal, int | Non
     return max_dd, recovery_days
 
 
+def _sell_realized_pnls(trades: list[Trade]) -> list[Decimal]:
+    """Extract realized PnLs from SELL trades. Private helper to eliminate duplication."""
+    return [t.realized_pnl for t in trades if t.side == Side.SELL and t.realized_pnl is not None]
+
+
 def profit_factor(trades: list[Trade]) -> Decimal:
-    sells = [t for t in trades if t.side == Side.SELL and t.realized_pnl is not None]
-    gains = sum((t.realized_pnl for t in sells if t.realized_pnl > 0), Decimal("0"))
-    losses = sum((-t.realized_pnl for t in sells if t.realized_pnl < 0), Decimal("0"))
+    pnls = _sell_realized_pnls(trades)
+    gains = sum((pnl for pnl in pnls if pnl > 0), Decimal("0"))
+    losses = sum((-pnl for pnl in pnls if pnl < 0), Decimal("0"))
     if losses == 0:
         return Decimal("Infinity") if gains > 0 else Decimal("0")
     return gains / losses
 
 
 def trade_stats(trades: list[Trade]) -> dict[str, Decimal]:
-    sells = [t for t in trades if t.side == Side.SELL and t.realized_pnl is not None]
-    wins = [t.realized_pnl for t in sells if t.realized_pnl > 0]
-    losses = [-t.realized_pnl for t in sells if t.realized_pnl < 0]
-    total = Decimal(len(sells))
+    pnls = _sell_realized_pnls(trades)
+    wins = [pnl for pnl in pnls if pnl > 0]
+    losses = [-pnl for pnl in pnls if pnl < 0]
+    total = Decimal(len(pnls))
     if total == 0:
         return {
             "win_rate": Decimal("0"), "loss_rate": Decimal("0"),
@@ -157,7 +162,7 @@ def alpha_vs_buy_hold(strategy_return_pct: Decimal, buy_hold_return_pct: Decimal
 
 
 def trade_distribution(trades: list[Trade], bucket_count: int = 10) -> list[dict]:
-    pnls = [t.realized_pnl for t in trades if t.side == Side.SELL and t.realized_pnl is not None]
+    pnls = _sell_realized_pnls(trades)
     if not pnls:
         return []
     lo, hi = min(pnls), max(pnls)
