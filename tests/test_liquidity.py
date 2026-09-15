@@ -37,6 +37,15 @@ def test_rejects_when_spread_at_or_above_threshold():
     assert reason == "spread trop large"
 
 
+def test_rejects_when_spread_exactly_at_threshold():
+    ticker = Ticker24h(symbol="BTCUSDT", quote_volume=Decimal("60000000"))
+    # bid=99.95, ask=100.05 -> mid=100, spread_relative=0.10/100=0.001, spread_bps=10 exactly
+    book = BookTicker(symbol="BTCUSDT", bid_price=Decimal("99.95"), ask_price=Decimal("100.05"))
+    ok, reason = passes_liquidity_filter(ticker, book, _config())
+    assert ok is False
+    assert reason == "spread trop large"
+
+
 def test_volume_check_takes_priority_when_both_fail():
     ticker = Ticker24h(symbol="BTCUSDT", quote_volume=Decimal("1000"))
     book = BookTicker(symbol="BTCUSDT", bid_price=Decimal("100"), ask_price=Decimal("101"))
