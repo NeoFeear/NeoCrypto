@@ -70,18 +70,33 @@ def profit_factor(trades: list[Trade]) -> Decimal:
     return gains / losses
 
 
-def expectancy(trades: list[Trade]) -> Decimal:
+def trade_stats(trades: list[Trade]) -> dict[str, Decimal]:
     sells = [t for t in trades if t.side == Side.SELL and t.realized_pnl is not None]
-    if not sells:
-        return Decimal("0")
     wins = [t.realized_pnl for t in sells if t.realized_pnl > 0]
     losses = [-t.realized_pnl for t in sells if t.realized_pnl < 0]
     total = Decimal(len(sells))
+    if total == 0:
+        return {
+            "win_rate": Decimal("0"), "loss_rate": Decimal("0"),
+            "avg_win": Decimal("0"), "avg_loss": Decimal("0"),
+            "win_count": Decimal("0"), "loss_count": Decimal("0"),
+            "total_sells": Decimal("0"),
+        }
     win_rate = Decimal(len(wins)) / total
     loss_rate = Decimal(len(losses)) / total
     avg_win = sum(wins, Decimal("0")) / Decimal(len(wins)) if wins else Decimal("0")
     avg_loss = sum(losses, Decimal("0")) / Decimal(len(losses)) if losses else Decimal("0")
-    return win_rate * avg_win - loss_rate * avg_loss
+    return {
+        "win_rate": win_rate, "loss_rate": loss_rate,
+        "avg_win": avg_win, "avg_loss": avg_loss,
+        "win_count": Decimal(len(wins)), "loss_count": Decimal(len(losses)),
+        "total_sells": total,
+    }
+
+
+def expectancy(trades: list[Trade]) -> Decimal:
+    stats = trade_stats(trades)
+    return stats["win_rate"] * stats["avg_win"] - stats["loss_rate"] * stats["avg_loss"]
 
 
 def exposure_time_pct(snapshots: list[PortfolioSnapshot]) -> Decimal:

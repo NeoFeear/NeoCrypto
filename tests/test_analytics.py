@@ -204,3 +204,34 @@ def test_monthly_returns_buckets_by_calendar_month():
 
 def test_monthly_returns_empty_for_no_snapshots():
     assert analytics.monthly_returns([]) == {}
+
+
+def test_trade_stats_matches_hand_computed_values():
+    trades = [_trade(Decimal("50")), _trade(Decimal("-20")), _trade(Decimal("80")),
+              _trade(Decimal("-30")), _trade(Decimal("10"))]
+
+    stats = analytics.trade_stats(trades)
+
+    assert stats["win_rate"] == Decimal("0.6")
+    assert stats["loss_rate"] == Decimal("0.4")
+    assert stats["avg_win"].quantize(Decimal("0.0001")) == Decimal("46.6667")
+    assert stats["avg_loss"] == Decimal("25")
+    assert stats["win_count"] == Decimal("3")
+    assert stats["loss_count"] == Decimal("2")
+    assert stats["total_sells"] == Decimal("5")
+
+
+def test_trade_stats_empty_when_no_sells():
+    stats = analytics.trade_stats([_trade(None, side=Side.BUY)])
+    assert stats["win_rate"] == Decimal("0")
+    assert stats["loss_rate"] == Decimal("0")
+    assert stats["avg_win"] == Decimal("0")
+    assert stats["avg_loss"] == Decimal("0")
+    assert stats["total_sells"] == Decimal("0")
+
+
+def test_expectancy_still_matches_after_refactor():
+    trades = [_trade(Decimal("50")), _trade(Decimal("-20")), _trade(Decimal("80")),
+              _trade(Decimal("-30")), _trade(Decimal("10"))]
+    # unchanged from Plan 1: 0.6*(140/3) - 0.4*25 = 28 - 10 = 18
+    assert analytics.expectancy(trades).quantize(Decimal("0.0001")) == Decimal("18.0000")
