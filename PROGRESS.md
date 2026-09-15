@@ -27,8 +27,8 @@ provider, valorisation moteur, `trade_stats`, couverture pagination).
 - [x] Task 2 — Valorisation moteur FIFO (`unrealized_pnl`, `realized_pnl_cumule`)
 - [x] Task 3 — `analytics.trade_stats()` + refactor `expectancy()` (1 correctif : déduplication du prédicat sell sur 3 fonctions)
 - [x] Task 4 — Filtre de liquidité (`liquidity.py`) (1 correctif : limite exacte du spread non testée)
-- [ ] Task 5 — Stratégie Buy & Hold
-- [ ] Task 6 — Stratégie DCA
+- [x] Task 5 — Stratégie Buy & Hold + helper `build_snapshot` partagé
+- [x] Task 6 — Stratégie DCA (1 correctif : ZeroDivisionError si fréquence < intervalle de bougie)
 - [ ] Task 7 — Grid : construction des niveaux
 - [ ] Task 8 — Grid : logique de déclenchement (D1-D3)
 - [ ] Task 9 — `backtest.py` : sélection watchlist + téléchargement
