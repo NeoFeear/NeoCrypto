@@ -32,7 +32,7 @@ provider, valorisation moteur, `trade_stats`, couverture pagination).
 - [x] Task 7 — Grid : construction des niveaux (1 correctif : bornes non exactes en spacing géométrique pour des ratios non-rationnels)
 - [x] Task 8 — Grid : logique de déclenchement (D1-D3) (1 correctif majeur : le code de référence du plan lui-même contredisait son propre test D3 — niveaux adjacents partagent une borne de prix, garde anti-aller-retour-même-bougie ajoutée et documentée)
 - [x] Task 9 — `backtest.py` : sélection watchlist + téléchargement (fixture de test corrigée : boucle infinie potentielle dans un provider factice non-stateful)
-- [ ] Task 10 — `backtest.py` : orchestration du rejeu de stratégies
+- [x] Task 10 — `backtest.py` : orchestration du rejeu de stratégies
 - [ ] Task 11 — `backtest.py` : construction des lignes de rapport
 - [ ] Task 12 — `backtest.py` : export CSV + table console + `main()`
 - [ ] Task 13 — Vérification complète de la suite
