@@ -34,7 +34,7 @@ provider, valorisation moteur, `trade_stats`, couverture pagination).
 - [x] Task 9 — `backtest.py` : sélection watchlist + téléchargement (fixture de test corrigée : boucle infinie potentielle dans un provider factice non-stateful)
 - [x] Task 10 — `backtest.py` : orchestration du rejeu de stratégies
 - [x] Task 11 — `backtest.py` : construction des lignes de rapport
-- [ ] Task 12 — `backtest.py` : export CSV + table console + `main()`
+- [x] Task 12 — `backtest.py` : export CSV + table console + `main()` (1 correctif : paramètres de stratégie en dur, déplacés dans `config.yaml`)
 - [ ] Task 13 — Vérification complète de la suite
 
 ## Décisions / rulings notables (Plan 2)
