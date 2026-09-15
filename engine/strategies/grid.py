@@ -40,7 +40,11 @@ def run_grid(klines: list[Kline], engine: FifoEngine, symbol: str, params: dict)
     """Spec section 8 (decisions D1-D3). Levels re-arm indefinitely (D1); a
     level triggers if the candle's [low, high] touches its price (D2,
     backtest side); simultaneous BUY triggers are attempted cheapest-price-
-    first so a cash shortfall rejects the priciest ones (D3)."""
+    first so a cash shortfall rejects the priciest ones (D3). A level bought
+    in a candle cannot also be sold in that same candle — since backtest
+    crossing detection only sees a candle's [low, high] range (not the actual
+    intrabar price path), allowing a same-candle round-trip would assume a
+    favorable price path the OHLC data doesn't actually prove."""
     levels = build_grid_levels(
         params["lower_bound"], params["upper_bound"], int(params["n_levels"]), params["spacing"]
     )

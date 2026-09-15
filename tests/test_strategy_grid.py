@@ -110,3 +110,24 @@ def test_grid_never_triggers_when_price_stays_between_levels():
                       "spacing": "arithmetic", "order_size_quote": 100})
 
     assert engine.trades == []
+
+
+def test_grid_level_does_not_round_trip_within_same_candle():
+    # single level: lower=100, upper=200, n_levels=1 -> buy=100, sell=200
+    engine = FifoEngine(initial_cash=Decimal("1000"), fee_pct=Decimal("0.001"))
+    klines = [
+        _ohlc_kline(0, "90", "210", "150"),           # spans BOTH buy=100 and sell=200 in one candle
+        _ohlc_kline(3_600_000, "190", "210", "200"),  # still touches sell=200, now allowed (separate candle)
+    ]
+
+    run_grid(klines, engine, "BTCUSDT",
+              params={"lower_bound": 100, "upper_bound": 200, "n_levels": 1,
+                      "spacing": "arithmetic", "order_size_quote": 100})
+
+    # candle 1: BUY fires (qty=1 @ 100, total_cost=100.1), SELL does NOT fire even though
+    # sell_price=200 is within [90,210] -- the level was just bought this same candle.
+    # candle 2: SELL now fires (gross=200, fee=0.2, proceeds=199.8, pnl=(200-100)*1-0.2=99.8)
+    assert len(engine.trades) == 2
+    assert [t.side.value for t in engine.trades] == ["BUY", "SELL"]
+    assert engine.trades[0].total_cost == Decimal("100.1")
+    assert engine.trades[1].realized_pnl == Decimal("99.8")
