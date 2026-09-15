@@ -23,6 +23,12 @@ def test_book_ticker_spread_relative():
     assert bt.spread_relative == Decimal("1") / Decimal("100.5")
 
 
+def test_book_ticker_spread_bps():
+    bt = BookTicker(symbol="BTCUSDT", bid_price=Decimal("100"), ask_price=Decimal("100.10"))
+    # spread_relative = 0.10 / 100.05 ; spread_bps = that * 10000
+    assert bt.spread_bps == (Decimal("0.10") / Decimal("100.05")) * Decimal(10000)
+
+
 def test_ticker_24h_holds_quote_volume():
     t = Ticker24h(symbol="BTCUSDT", quote_volume=Decimal("60000000"))
     assert t.quote_volume == Decimal("60000000")

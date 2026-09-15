@@ -24,6 +24,10 @@ class BookTicker:
         mid = (self.bid_price + self.ask_price) / Decimal(2)
         return (self.ask_price - self.bid_price) / mid
 
+    @property
+    def spread_bps(self) -> Decimal:
+        return self.spread_relative * Decimal(10000)
+
 
 @dataclass(frozen=True)
 class Ticker24h:

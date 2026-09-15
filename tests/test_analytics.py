@@ -77,6 +77,21 @@ def test_max_drawdown_with_no_decline_is_zero_with_zero_recovery():
     assert recovery_days == 0
 
 
+def test_max_drawdown_never_recovers_returns_none():
+    declining = [
+        PortfolioSnapshot(
+            timestamp=T0 + i * DAY_MS, symbol="BTCUSDT",
+            cash_balance=Decimal("0"), position_value=Decimal(total),
+            total_value=Decimal(total), unrealized_pnl=Decimal("0"),
+            realized_pnl_cumule=Decimal("0"),
+        )
+        for i, total in enumerate([1000, 900, 800, 700])
+    ]
+    max_dd, recovery_days = analytics.max_drawdown(declining)
+    assert max_dd.quantize(Decimal("0.0001")) == Decimal("30.0000")
+    assert recovery_days is None
+
+
 def test_profit_factor_normal_case():
     trades = [_trade(Decimal("50")), _trade(Decimal("-20")), _trade(Decimal("80")),
               _trade(Decimal("-30")), _trade(Decimal("10"))]

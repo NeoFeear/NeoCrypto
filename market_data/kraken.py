@@ -73,7 +73,9 @@ class KrakenProvider(MarketDataProvider):
         pair = self._pair(symbol)
         result = self._get_result("/0/public/Ticker", {"pair": pair})
         t = result[pair]
-        return BookTicker(symbol=symbol, bid_price=Decimal(t["b"][0]), ask_price=Decimal(t["a"][0]))
+        return BookTicker(
+            symbol=symbol, bid_price=Decimal(str(t["b"][0])), ask_price=Decimal(str(t["a"][0]))
+        )
 
     def get_ticker_24h(self, symbol: str) -> Ticker24h:
         pair = self._pair(symbol)
@@ -81,6 +83,6 @@ class KrakenProvider(MarketDataProvider):
         t = result[pair]
         # Kraken's Ticker has no quote-volume field, only base-currency 24h volume (v[1]).
         # Approximate quote volume as base_volume_24h * last trade price.
-        last_price = Decimal(t["c"][0])
-        base_volume_24h = Decimal(t["v"][1])
+        last_price = Decimal(str(t["c"][0]))
+        base_volume_24h = Decimal(str(t["v"][1]))
         return Ticker24h(symbol=symbol, quote_volume=base_volume_24h * last_price)

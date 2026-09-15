@@ -1,3 +1,4 @@
+import logging
 from decimal import Decimal
 
 from engine.fifo_engine import FifoEngine, Side
@@ -26,13 +27,15 @@ def test_buy_creates_a_lot_and_deducts_cash_with_fee():
     assert lots[0].timestamp_achat == 1000
 
 
-def test_buy_rejected_when_cash_insufficient():
+def test_buy_rejected_when_cash_insufficient(caplog):
     engine = FifoEngine(initial_cash=Decimal("50"), fee_pct=Decimal("0.001"))
 
-    trade = engine.buy(
-        timestamp=1000, symbol="BTCUSDT", price=Decimal("100"), quantity=Decimal("1"),
-        strategy_name="test",
-    )
+    with caplog.at_level(logging.WARNING):
+        trade = engine.buy(
+            timestamp=1000, symbol="BTCUSDT", price=Decimal("100"), quantity=Decimal("1"),
+            strategy_name="test",
+        )
+    assert any(record.levelname == "WARNING" for record in caplog.records)
 
     assert trade is None
     assert engine.cash_balance == Decimal("50")
@@ -135,22 +138,26 @@ def test_multiple_sells_across_lots_of_different_ages():
     assert lots[0].quantity_restante == Decimal("1")
 
 
-def test_sell_with_no_lot_available_is_rejected_in_full():
+def test_sell_with_no_lot_available_is_rejected_in_full(caplog):
     engine = FifoEngine(initial_cash=Decimal("1000"), fee_pct=Decimal("0.001"))
 
-    trade = engine.sell(timestamp=1000, symbol="BTCUSDT", price=Decimal("100"), quantity=Decimal("1"), strategy_name="t")
+    with caplog.at_level(logging.WARNING):
+        trade = engine.sell(timestamp=1000, symbol="BTCUSDT", price=Decimal("100"), quantity=Decimal("1"), strategy_name="t")
+    assert any(record.levelname == "WARNING" for record in caplog.records)
 
     assert trade is None
     assert engine.cash_balance == Decimal("1000")
     assert engine.trades == []
 
 
-def test_sell_exceeding_available_quantity_is_rejected_in_full_not_partial():
+def test_sell_exceeding_available_quantity_is_rejected_in_full_not_partial(caplog):
     engine = FifoEngine(initial_cash=Decimal("1000"), fee_pct=Decimal("0.001"))
     engine.buy(timestamp=1000, symbol="BTCUSDT", price=Decimal("100"), quantity=Decimal("1"), strategy_name="t")
     cash_after_buy = engine.cash_balance
 
-    trade = engine.sell(timestamp=2000, symbol="BTCUSDT", price=Decimal("110"), quantity=Decimal("5"), strategy_name="t")
+    with caplog.at_level(logging.WARNING):
+        trade = engine.sell(timestamp=2000, symbol="BTCUSDT", price=Decimal("110"), quantity=Decimal("5"), strategy_name="t")
+    assert any(record.levelname == "WARNING" for record in caplog.records)
 
     assert trade is None
     assert engine.cash_balance == cash_after_buy

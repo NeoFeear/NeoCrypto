@@ -32,11 +32,11 @@ class BinanceProvider(MarketDataProvider):
         return [
             Kline(
                 open_time_ms=row[0],
-                open=Decimal(row[1]),
-                high=Decimal(row[2]),
-                low=Decimal(row[3]),
-                close=Decimal(row[4]),
-                volume=Decimal(row[5]),
+                open=Decimal(str(row[1])),
+                high=Decimal(str(row[2])),
+                low=Decimal(str(row[3])),
+                close=Decimal(str(row[4])),
+                volume=Decimal(str(row[5])),
                 close_time_ms=row[6],
             )
             for row in rows
@@ -48,12 +48,12 @@ class BinanceProvider(MarketDataProvider):
         data = resp.json()
         return BookTicker(
             symbol=data["symbol"],
-            bid_price=Decimal(data["bidPrice"]),
-            ask_price=Decimal(data["askPrice"]),
+            bid_price=Decimal(str(data["bidPrice"])),
+            ask_price=Decimal(str(data["askPrice"])),
         )
 
     def get_ticker_24h(self, symbol: str) -> Ticker24h:
         resp = self._client.get("/api/v3/ticker/24hr", params={"symbol": symbol})
         resp.raise_for_status()
         data = resp.json()
-        return Ticker24h(symbol=data["symbol"], quote_volume=Decimal(data["quoteVolume"]))
+        return Ticker24h(symbol=data["symbol"], quote_volume=Decimal(str(data["quoteVolume"])))
