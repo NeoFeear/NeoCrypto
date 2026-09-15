@@ -101,3 +101,53 @@ class FifoEngine:
         )
         self._next_lot_id += 1
         return trade
+
+    def sell(
+        self, timestamp: int, symbol: str, price: Decimal, quantity: Decimal, strategy_name: str
+    ) -> Trade | None:
+        symbol_lots = self.get_lots(symbol)
+        available = sum((lot.quantity_restante for lot in symbol_lots), Decimal("0"))
+
+        if quantity > available:
+            logger.warning(
+                "SELL rejete: quantite demandee superieure au disponible "
+                "symbol=%s quantite_demandee=%s disponible=%s",
+                symbol, quantity, available,
+            )
+            return None
+
+        remaining = quantity
+        realized_pnl = Decimal("0")
+        for lot in symbol_lots:
+            if remaining <= 0:
+                break
+            take = min(lot.quantity_restante, remaining)
+            realized_pnl += (price - lot.prix_achat) * take
+            lot.quantity_restante -= take
+            remaining -= take
+
+        self.lots = [lot for lot in self.lots if lot.quantity_restante > 0]
+
+        gross = price * quantity
+        fee_amount = gross * self.fee_pct
+        realized_pnl -= fee_amount
+        total_cost = gross - fee_amount  # net proceeds credited to cash
+
+        self.cash_balance += total_cost
+        trade = Trade(
+            id=self._next_trade_id,
+            timestamp=timestamp,
+            symbol=symbol,
+            side=Side.SELL,
+            price=price,
+            quantity=quantity,
+            fee_pct=self.fee_pct,
+            fee_amount=fee_amount,
+            total_cost=total_cost,
+            realized_pnl=realized_pnl,
+            cash_balance_after=self.cash_balance,
+            strategy_name=strategy_name,
+        )
+        self._next_trade_id += 1
+        self.trades.append(trade)
+        return trade
