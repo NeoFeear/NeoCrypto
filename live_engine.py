@@ -11,7 +11,7 @@ import httpx
 from config import load_config
 from db.migrate import init_db
 from db.repository import get_engine_state, insert_snapshot, insert_trade, replace_lots_for_symbol, set_engine_state
-from discord_notifier import DiscordWebhooks, send_alert, send_daily_summary, send_transaction
+from discord_notifier import DiscordWebhooks, load_discord_webhooks, send_alert, send_daily_summary, send_log, send_transaction
 from engine.fifo_engine import FifoEngine, Lot, Side, Trade
 from engine.strategies import base as strategy_base
 from engine.strategies.buy_hold import BuyHoldState, buy_hold_state_from_json, buy_hold_state_to_json
@@ -396,21 +396,23 @@ def main() -> None:
     cfg = load_config()
     provider = build_provider(cfg.data_source)
     conn = init_db(cfg.db_path)
+    discord_webhooks = load_discord_webhooks()
 
     symbol = cfg.live.active_symbol
     strategy_type = cfg.live.active_strategy
     params = cfg.strategy_defaults[strategy_type]
 
-    # Rebuilds cash_balance + open lots from the DB (Task 6) so a restart
-    # genuinely resumes the portfolio, not just each strategy's own state.
     engine = reconstruct_engine_from_db(
         conn, symbol, initial_cash=cfg.backtest.initial_capital, fee_pct=cfg.fees.default_fee_pct
     )
 
     def on_critical_failure(message: str) -> None:
         logger.critical(message)
+        send_alert(discord_webhooks.alerts, "api_error", message, severity="critical")
 
     logger.info("Demarrage du moteur live: %s / %s", symbol, strategy_type)
+    send_log(discord_webhooks.logs, f"Moteur live demarre pour {symbol}/{strategy_type}.", level="INFO")
+
     try:
         run_polling_loop(
             conn, provider, engine, symbol, strategy_type, params,
@@ -419,13 +421,20 @@ def main() -> None:
             on_critical_failure=on_critical_failure,
             retention_days=cfg.snapshots.retention_detail_days,
             initial_cash=cfg.backtest.initial_capital,
-            # Placeholder until Task 9 wires in load_discord_webhooks() alongside
-            # the rest of main()'s Discord setup.
-            discord_webhooks=DiscordWebhooks(daily_summary="", transactions="", alerts="", logs=""),
+            discord_webhooks=discord_webhooks,
             drawdown_threshold_pct=cfg.discord.alert_drawdown_threshold_pct,
         )
     except KeyboardInterrupt:
         logger.info("Arret demande (Ctrl+C).")
+        send_log(discord_webhooks.logs, f"Moteur live arrete (Ctrl+C) pour {symbol}/{strategy_type}.", level="INFO")
+    except Exception as e:
+        logger.exception("Arret inattendu du moteur live pour %s/%s.", symbol, strategy_type)
+        send_alert(
+            discord_webhooks.alerts, "service_down",
+            f"Le moteur live pour {symbol}/{strategy_type} s'est arrete de facon inattendue: {e}",
+            severity="critical",
+        )
+        raise
     finally:
         conn.close()
 
