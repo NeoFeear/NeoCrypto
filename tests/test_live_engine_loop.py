@@ -2,6 +2,7 @@ from decimal import Decimal
 
 import pytest
 
+import db.repository
 from db.migrate import init_db
 from db.repository import insert_snapshot
 from engine.fifo_engine import FifoEngine
@@ -120,6 +121,45 @@ def test_run_polling_loop_survives_unhandled_exception_and_continues_next_cycle(
     assert len(conn.execute("SELECT * FROM portfolio_snapshots").fetchall()) == 1
 
 
+def test_run_polling_loop_rolls_back_partial_cycle_so_signal_is_not_replayed(conn, monkeypatch):
+    # Reproduces the exact bug the re-reviewer found: insert_snapshot raises
+    # partway through cycle 1, AFTER insert_trade already ran with commit=False.
+    # Without a conn.rollback() in run_polling_loop's except handler, that
+    # uncommitted BUY trade sits pending in the open transaction (not committed,
+    # but not discarded either) and last_ts never advances (its own write never
+    # ran). Cycle 2 then re-serves the SAME candle, buys again, and its own
+    # successful conn.commit() silently makes cycle 1's leftover trade durable
+    # too -- two BUY trades for one candle, exactly the replay bug I3 exists to
+    # prevent.
+    monkeypatch.setattr("live_engine.time.sleep", lambda s: None)
+    calls = {"n": 0}
+    real_insert_snapshot = db.repository.insert_snapshot
+
+    def _fail_once(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("boom")
+        return real_insert_snapshot(*args, **kwargs)
+
+    monkeypatch.setattr("live_engine.insert_snapshot", _fail_once)
+
+    # SAME candle timestamp served on both cycles (last_ts was never advanced by
+    # the failed first cycle).
+    provider = SequenceProvider([_kline(0, "100"), _kline(0, "100")])
+    engine = FifoEngine(initial_cash=Decimal("1000"), fee_pct=Decimal("0.001"))
+    failures = []
+
+    run_polling_loop(
+        conn, provider, engine, "BTCUSDT", "buy_hold", {"invest_at": "start"},
+        poll_interval="5m", poll_interval_seconds=300,
+        on_critical_failure=failures.append, max_cycles=2,
+    )
+
+    assert len(failures) == 1
+    trades_in_db = conn.execute("SELECT * FROM trades WHERE symbol = 'BTCUSDT'").fetchall()
+    assert len(trades_in_db) == 1
+
+
 def test_run_polling_loop_runs_daily_housekeeping_and_aggregates_old_snapshots(conn, monkeypatch):
     now_ms = 40 * DAY_MS  # "today" is day 40
     monkeypatch.setattr("live_engine.time.time", lambda: now_ms / 1000)
@@ -152,9 +192,17 @@ def test_run_polling_loop_runs_daily_housekeeping_and_aggregates_old_snapshots(c
         on_critical_failure=lambda msg: None, max_cycles=1, retention_days=30,
     )
 
-    count = conn.execute(
-        "SELECT COUNT(*) AS c FROM portfolio_snapshots WHERE symbol = 'ETHUSDT' AND timestamp = ?",
-        (old_bucket_start,),
-    ).fetchone()["c"]
-    # Without the wiring, both old ETHUSDT rows would still be separate (count == 2).
-    assert count == 1
+    eth_rows = conn.execute(
+        "SELECT * FROM portfolio_snapshots WHERE symbol = 'ETHUSDT'"
+    ).fetchall()
+    # Total row count for the symbol is what actually distinguishes "aggregated"
+    # from "untouched": both seeded rows bucket to timestamp=0 regardless of
+    # whether aggregation ran, so asserting COUNT(*) WHERE timestamp=0 alone
+    # (the previous version of this test) can't tell the two cases apart --
+    # without the wiring, both rows survive untouched (2), one at ts=0 and one
+    # at ts=300_000.
+    assert len(eth_rows) == 1
+    assert eth_rows[0]["timestamp"] == old_bucket_start
+    # Confirms it's the aggregated average, not just coincidentally one surviving
+    # row: average of the two seeded cash_balance values (1000, 1010) is 1005.
+    assert Decimal(eth_rows[0]["cash_balance"]) == Decimal("1005")

@@ -253,16 +253,22 @@ def run_polling_loop(
                 conn, provider, engine, symbol, strategy_type, params, poll_interval, trade_id_map,
                 fetch_fn=lambda: fetch_with_retry(provider, symbol, poll_interval, on_critical_failure),
             )
+
+            if retention_days is not None:
+                now_ms = int(time.time() * 1000)
+                today = now_ms // DAY_MS
+                if today != last_housekeeping_day:
+                    aggregate_old_snapshots(conn, now_ms=now_ms, retention_days=retention_days)
+                    last_housekeeping_day = today
         except Exception as e:
             logger.exception("Cycle en echec pour %s/%s, cycle ignore.", symbol, strategy_type)
+            # Discard whatever this cycle (or a failed housekeeping pass) left
+            # pending and uncommitted -- without this, those writes would sit in
+            # the open transaction and get silently made durable by whatever the
+            # NEXT conn.commit() happens to be, defeating run_cycle's atomicity
+            # guarantee and letting a signal be replayed after a partial failure.
+            conn.rollback()
             on_critical_failure(f"Exception non geree pendant le cycle pour {symbol}: {e}")
-
-        if retention_days is not None:
-            now_ms = int(time.time() * 1000)
-            today = now_ms // DAY_MS
-            if today != last_housekeeping_day:
-                aggregate_old_snapshots(conn, now_ms=now_ms, retention_days=retention_days)
-                last_housekeeping_day = today
 
         cycles += 1
         if max_cycles is None or cycles < max_cycles:
