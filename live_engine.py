@@ -47,7 +47,9 @@ def _load_state(conn: sqlite3.Connection, symbol: str, strategy_type: str, param
 
 def _save_state(conn: sqlite3.Connection, symbol: str, strategy_type: str, state) -> None:
     key = f"strategy_state:{symbol}:{strategy_type}"
-    set_engine_state(conn, key, _STATE_DUMPERS[strategy_type](state))
+    # commit=False: this is only ever called from inside run_cycle, which commits
+    # once at the very end so a cycle is atomic.
+    set_engine_state(conn, key, _STATE_DUMPERS[strategy_type](state), commit=False)
 
 
 def _last_processed_key(symbol: str, strategy_type: str) -> str:
@@ -103,7 +105,7 @@ def run_cycle(
         raise ValueError(f"strategie inconnue: {strategy_type}")
 
     for trade in engine.trades[trades_before:]:
-        db_trade_id = insert_trade(conn, trade)
+        db_trade_id = insert_trade(conn, trade, commit=False)
         trade_id_map[trade.id] = db_trade_id
 
     # Resync lots from the engine's own state rather than tracking "which lot is
@@ -126,13 +128,19 @@ def run_cycle(
         )
         for lot in engine.get_lots(symbol)
     ]
-    replace_lots_for_symbol(conn, symbol, translated_lots)
+    replace_lots_for_symbol(conn, symbol, translated_lots, commit=False)
 
     snapshot = strategy_base.build_snapshot(engine, symbol, k.close, k.open_time_ms)
-    insert_snapshot(conn, snapshot)
+    insert_snapshot(conn, snapshot, commit=False)
 
     _save_state(conn, symbol, strategy_type, state)
-    set_engine_state(conn, _last_processed_key(symbol, strategy_type), str(k.open_time_ms))
+    set_engine_state(conn, _last_processed_key(symbol, strategy_type), str(k.open_time_ms), commit=False)
+
+    # One cycle is atomic: everything above runs with commit=False, so a crash
+    # before this point leaves nothing durably committed (no trade recorded
+    # without its matching "processed" marker), and a crash never replays a
+    # signal on the next cycle.
+    conn.commit()
 
 
 def reconstruct_engine_from_db(

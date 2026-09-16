@@ -5,7 +5,7 @@ from engine.fifo_engine import Lot, Trade
 from models import PortfolioSnapshot
 
 
-def insert_trade(conn: sqlite3.Connection, trade: Trade) -> int:
+def insert_trade(conn: sqlite3.Connection, trade: Trade, commit: bool = True) -> int:
     cursor = conn.execute(
         """
         INSERT INTO trades
@@ -21,7 +21,8 @@ def insert_trade(conn: sqlite3.Connection, trade: Trade) -> int:
             str(trade.cash_balance_after), trade.strategy_name,
         ),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
     return cursor.lastrowid
 
 
@@ -40,7 +41,7 @@ def insert_lot(
     return cursor.lastrowid
 
 
-def insert_snapshot(conn: sqlite3.Connection, snapshot: PortfolioSnapshot) -> None:
+def insert_snapshot(conn: sqlite3.Connection, snapshot: PortfolioSnapshot, commit: bool = True) -> None:
     conn.execute(
         """
         INSERT INTO portfolio_snapshots
@@ -54,10 +55,11 @@ def insert_snapshot(conn: sqlite3.Connection, snapshot: PortfolioSnapshot) -> No
             str(snapshot.unrealized_pnl), str(snapshot.realized_pnl_cumule),
         ),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
-def replace_lots_for_symbol(conn: sqlite3.Connection, symbol: str, lots: list[Lot]) -> None:
+def replace_lots_for_symbol(conn: sqlite3.Connection, symbol: str, lots: list[Lot], commit: bool = True) -> None:
     conn.execute("DELETE FROM lots WHERE symbol = ?", (symbol,))
     for lot in lots:
         conn.execute(
@@ -67,7 +69,8 @@ def replace_lots_for_symbol(conn: sqlite3.Connection, symbol: str, lots: list[Lo
             """,
             (lot.trade_id_achat, symbol, str(lot.quantity_restante), str(lot.prix_achat), lot.timestamp_achat),
         )
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
 def get_engine_state(conn: sqlite3.Connection, key: str) -> str | None:
@@ -75,10 +78,11 @@ def get_engine_state(conn: sqlite3.Connection, key: str) -> str | None:
     return row["value"] if row is not None else None
 
 
-def set_engine_state(conn: sqlite3.Connection, key: str, value: str) -> None:
+def set_engine_state(conn: sqlite3.Connection, key: str, value: str, commit: bool = True) -> None:
     conn.execute(
         "INSERT INTO engine_state (key, value) VALUES (?, ?) "
         "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
         (key, value),
     )
-    conn.commit()
+    if commit:
+        conn.commit()

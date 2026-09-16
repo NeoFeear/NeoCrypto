@@ -266,3 +266,25 @@ def test_reconstruct_engine_from_db_rebuilds_trades_so_realized_pnl_cumule_survi
     restored = reconstruct_engine_from_db(conn, "BTCUSDT", initial_cash=Decimal("1000"), fee_pct=Decimal("0.001"))
 
     assert restored.realized_pnl_cumule("BTCUSDT") == pre_restart_pnl
+
+
+def test_run_cycle_is_atomic_partial_failure_leaves_nothing_committed(conn, monkeypatch):
+    # insert_snapshot runs after insert_trade/replace_lots_for_symbol but before
+    # the final conn.commit() -- raising here simulates a crash mid-cycle.
+    def _boom(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    # run_cycle calls insert_snapshot via the name bound into live_engine's own
+    # namespace (`from db.repository import insert_snapshot`), so patch it there.
+    monkeypatch.setattr("live_engine.insert_snapshot", _boom)
+    provider = FakeProvider([_kline(0, "100")])
+    engine = FifoEngine(initial_cash=Decimal("1000"), fee_pct=Decimal("0.001"))
+    params = {"amount_per_buy": 50, "frequency_hours": 24, "reference_price": "close"}
+
+    with pytest.raises(RuntimeError):
+        run_cycle(conn, provider, engine, "BTCUSDT", "dca", params, poll_interval="5m", trade_id_map={})
+    conn.rollback()
+
+    # Without the fix, insert_trade's own internal commit() would have already
+    # made the trade durable, and it would survive this rollback.
+    assert conn.execute("SELECT * FROM trades WHERE symbol = 'BTCUSDT'").fetchall() == []
