@@ -282,3 +282,51 @@ def test_send_log_sends_plain_message(monkeypatch):
     embed = captured["embed"]["embeds"][0]
     assert "Moteur live demarre" in embed["description"]
     assert "INFO" in embed["title"]
+
+
+from discord_notifier import send_daily_summary
+
+
+def test_send_daily_summary_posts_when_no_existing_message(monkeypatch):
+    monkeypatch.setattr("discord_notifier._post_embed", lambda url, embed: "555")
+
+    message_id = send_daily_summary(
+        "https://webhook", symbol="BTCUSDT", total_value=Decimal("1050.25"),
+        realized_pnl_cumule=Decimal("30.10"), unrealized_pnl=Decimal("20.15"),
+        return_pct=Decimal("5.025"), existing_message_id=None,
+    )
+
+    assert message_id == "555"
+
+
+def test_send_daily_summary_patches_when_existing_message(monkeypatch):
+    patch_calls = []
+    monkeypatch.setattr(
+        "discord_notifier._post_embed",
+        lambda url, embed: (_ for _ in ()).throw(AssertionError("should PATCH, not POST")),
+    )
+    monkeypatch.setattr(
+        "discord_notifier._patch_embed",
+        lambda url, message_id, embed: patch_calls.append(message_id) or True,
+    )
+
+    message_id = send_daily_summary(
+        "https://webhook", symbol="BTCUSDT", total_value=Decimal("1050.25"),
+        realized_pnl_cumule=Decimal("30.10"), unrealized_pnl=Decimal("20.15"),
+        return_pct=Decimal("5.025"), existing_message_id="123",
+    )
+
+    assert message_id == "123"
+    assert patch_calls == ["123"]
+
+
+def test_send_daily_summary_patch_failure_returns_none(monkeypatch):
+    monkeypatch.setattr("discord_notifier._patch_embed", lambda url, message_id, embed: False)
+
+    message_id = send_daily_summary(
+        "https://webhook", symbol="BTCUSDT", total_value=Decimal("1050.25"),
+        realized_pnl_cumule=Decimal("30.10"), unrealized_pnl=Decimal("20.15"),
+        return_pct=Decimal("5.025"), existing_message_id="123",
+    )
+
+    assert message_id is None

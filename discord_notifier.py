@@ -1,6 +1,7 @@
 import logging
 import time
 from dataclasses import dataclass
+from decimal import Decimal
 
 import httpx
 from dotenv import dotenv_values
@@ -140,3 +141,24 @@ def send_log(webhook_url: str, message: str, level: str) -> None:
         "color": _COLOR_LOG,
     }
     _post_embed(webhook_url, {"embeds": [embed]})
+
+
+def send_daily_summary(
+    webhook_url: str, symbol: str, total_value: Decimal, realized_pnl_cumule: Decimal,
+    unrealized_pnl: Decimal, return_pct: Decimal, existing_message_id: str | None,
+) -> str | None:
+    """Spec section 7: exactly 1 message per day, edited (PATCH) if it
+    already exists for today rather than duplicated."""
+    embed = {
+        "title": f"Resume quotidien -- {symbol}",
+        "color": _COLOR_LOG,
+        "fields": [
+            {"name": "Valeur totale", "value": str(total_value), "inline": True},
+            {"name": "PnL realise cumule", "value": str(realized_pnl_cumule), "inline": True},
+            {"name": "PnL latent", "value": str(unrealized_pnl), "inline": True},
+            {"name": "Rendement", "value": f"{return_pct}%", "inline": True},
+        ],
+    }
+    if existing_message_id is None:
+        return _post_embed(webhook_url, {"embeds": [embed]})
+    return existing_message_id if _patch_embed(webhook_url, existing_message_id, {"embeds": [embed]}) else None
