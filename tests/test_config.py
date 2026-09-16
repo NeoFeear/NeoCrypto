@@ -25,6 +25,8 @@ fees:
 live:
   poll_interval_seconds: 300
   poll_kline_interval: 5m
+  active_symbol: BTCUSDT
+  active_strategy: dca
 snapshots:
   retention_detail_days: 30
 strategy_defaults:
@@ -56,6 +58,8 @@ strategy_defaults:
     assert cfg.fees.default_fee_pct == Decimal("0.001")
     assert cfg.live.poll_interval_seconds == 300
     assert cfg.live.poll_kline_interval == "5m"
+    assert cfg.live.active_symbol == "BTCUSDT"
+    assert cfg.live.active_strategy == "dca"
     assert cfg.snapshots.retention_detail_days == 30
     assert cfg.strategy_defaults == {
         "buy_hold": {"invest_at": "start"},

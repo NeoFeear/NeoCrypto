@@ -6,6 +6,8 @@ from typing import Callable
 
 import httpx
 
+from config import load_config
+from db.migrate import init_db
 from db.repository import get_engine_state, insert_snapshot, insert_trade, replace_lots_for_symbol, set_engine_state
 from engine.fifo_engine import FifoEngine, Lot
 from engine.strategies import base as strategy_base
@@ -15,6 +17,7 @@ from engine.strategies.dca import DcaState, dca_state_from_json, dca_state_to_js
 from engine.strategies.dca import step as dca_step
 from engine.strategies.grid import GridState, build_grid_state, grid_state_from_json, grid_state_to_json
 from engine.strategies.grid import step_grid_live
+from market_data.factory import build_provider
 from market_data.provider import MarketDataProvider
 from market_data.types import Kline
 
@@ -206,3 +209,35 @@ def run_polling_loop(
         cycles += 1
         if max_cycles is None or cycles < max_cycles:
             time.sleep(poll_interval_seconds)
+
+
+def main() -> None:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    cfg = load_config()
+    provider = build_provider(cfg.data_source)
+    conn = init_db("crypto_sim.db")
+
+    symbol = cfg.live.active_symbol
+    strategy_type = cfg.live.active_strategy
+    params = cfg.strategy_defaults[strategy_type]
+
+    # Rebuilds cash_balance + open lots from the DB (Task 6) so a restart
+    # genuinely resumes the portfolio, not just each strategy's own state.
+    engine = reconstruct_engine_from_db(
+        conn, symbol, initial_cash=cfg.backtest.initial_capital, fee_pct=cfg.fees.default_fee_pct
+    )
+
+    def on_critical_failure(message: str) -> None:
+        logger.critical(message)
+
+    logger.info("Demarrage du moteur live: %s / %s", symbol, strategy_type)
+    run_polling_loop(
+        conn, provider, engine, symbol, strategy_type, params,
+        poll_interval=cfg.live.poll_kline_interval,
+        poll_interval_seconds=cfg.live.poll_interval_seconds,
+        on_critical_failure=on_critical_failure,
+    )
+
+
+if __name__ == "__main__":
+    main()

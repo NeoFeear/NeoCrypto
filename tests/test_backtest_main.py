@@ -73,7 +73,7 @@ def _fake_config() -> Config:
             initial_capital=Decimal("1000"), interval="1h", lookback_days=2,
         ),
         fees=FeesConfig(default_fee_pct=Decimal("0.001")),
-        live=LiveConfig(poll_interval_seconds=300, poll_kline_interval="5m"),
+        live=LiveConfig(poll_interval_seconds=300, poll_kline_interval="5m", active_symbol="BTCUSDT", active_strategy="dca"),
         snapshots=SnapshotsConfig(retention_detail_days=30),
         strategy_defaults={
             "buy_hold": {"invest_at": "start"},

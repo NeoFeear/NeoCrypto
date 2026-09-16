@@ -21,6 +21,8 @@ fees:
 live:
   poll_interval_seconds: 300
   poll_kline_interval: 5m
+  active_symbol: BTCUSDT
+  active_strategy: dca
 
 snapshots:
   retention_detail_days: 30

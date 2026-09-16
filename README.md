@@ -6,13 +6,15 @@ pour la spec complète.
 
 ## État actuel
 
-Plan 1/5 (fondation) : `MarketDataProvider` (Binance + repli Kraken), moteur FIFO, `analytics.py` — terminé.
-Plan 2/5 (backtest) : filtre de liquidité, 3 stratégies (Buy & Hold, DCA, Grid), `backtest.py` (téléchargement,
-rejeu, exports CSV `backtest_report.csv` + `analytics_report.csv`) — terminé.
+Plan 1/6 (fondation) : `MarketDataProvider` (Binance + repli Kraken), moteur FIFO, `analytics.py` — termine.
+Plan 2/6 (backtest) : filtre de liquidite, 3 strategies, `backtest.py` (telechargement, rejeu, exports CSV) — termine.
+Plan 3/6 (moteur live) : persistance SQLite (WAL), strategies pilotables au poll (`step()`), `live_engine.py`
+(polling, reprise sur incident, retry/backoff, housekeeping snapshots) — termine.
 
-Lancer le backtest : `python backtest.py` (nécessite `pip install -r requirements.txt`).
+Lancer le backtest : `python backtest.py`
+Lancer le moteur live : `python live_engine.py` (tourne indefiniment, Ctrl+C pour arreter)
 
-Pas encore de moteur live, de dashboard ni de déploiement — voir les plans suivants dans
+Pas encore de notifications Discord, de dashboard ni de deploiement — voir les plans suivants dans
 `docs/superpowers/plans/`.
 
 ## Développement
