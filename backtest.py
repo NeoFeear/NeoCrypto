@@ -70,13 +70,12 @@ def run_strategy(
     params: dict,
     initial_capital: Decimal,
     fee_pct: Decimal,
-    interval_ms: int,
 ) -> tuple[FifoEngine, list[PortfolioSnapshot]]:
     engine = FifoEngine(initial_cash=initial_capital, fee_pct=fee_pct)
     if strategy_type == "buy_hold":
         snapshots = run_buy_hold(klines, engine, symbol, params)
     elif strategy_type == "dca":
-        snapshots = run_dca(klines, engine, symbol, params, interval_ms)
+        snapshots = run_dca(klines, engine, symbol, params)
     elif strategy_type == "grid":
         snapshots = run_grid(klines, engine, symbol, params)
     else:
@@ -203,7 +202,7 @@ def main() -> None:
 
         buy_hold_engine, buy_hold_snapshots = run_strategy(
             "buy_hold", klines, symbol, strategy_params["buy_hold"],
-            cfg.backtest.initial_capital, cfg.fees.default_fee_pct, interval_ms,
+            cfg.backtest.initial_capital, cfg.fees.default_fee_pct,
         )
         buy_hold_return = analytics.total_return_pct(
             cfg.backtest.initial_capital, buy_hold_snapshots[-1].total_value
@@ -216,7 +215,7 @@ def main() -> None:
                 params = grid_params if strategy_type == "grid" else strategy_params[strategy_type]
                 engine, snapshots = run_strategy(
                     strategy_type, klines, symbol, params,
-                    cfg.backtest.initial_capital, cfg.fees.default_fee_pct, interval_ms,
+                    cfg.backtest.initial_capital, cfg.fees.default_fee_pct,
                 )
 
             if len(engine.trades) == 0:
