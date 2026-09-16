@@ -7,7 +7,7 @@ from db.migrate import init_db
 from db.repository import insert_snapshot
 from engine.fifo_engine import FifoEngine
 from housekeeping import DAY_MS
-from live_engine import run_polling_loop
+from live_engine import reconstruct_engine_from_db, run_polling_loop
 from market_data.provider import MarketDataProvider
 from market_data.types import Kline
 from models import PortfolioSnapshot
@@ -206,3 +206,77 @@ def test_run_polling_loop_runs_daily_housekeeping_and_aggregates_old_snapshots(c
     # Confirms it's the aggregated average, not just coincidentally one surviving
     # row: average of the two seeded cash_balance values (1000, 1010) is 1005.
     assert Decimal(eth_rows[0]["cash_balance"]) == Decimal("1005")
+
+
+def test_run_polling_loop_reconciles_in_memory_engine_with_db_after_mid_sell_rollback(conn, monkeypatch):
+    # Reproduces NEW-4: conn.rollback() alone only undoes the DB side of a failed
+    # cycle. run_cycle mutates `engine` in memory BEFORE persisting anything, so
+    # without also re-deriving `engine` from the DB, a rolled-back SELL's phantom
+    # realized_pnl stays "real" in the in-process engine and leaks into a LATER,
+    # successful cycle's durable snapshot (build_snapshot reads off that same
+    # in-memory engine) -- even though the trades table never durably recorded
+    # that SELL. That's the DB vs. reconstruction disagreement C2 originally fixed,
+    # reintroduced through this narrower door.
+    #
+    # Sequence (grid, one level: buy_price=100, sell_price=200, order_size_quote=100):
+    #   cycle 1 (price=150): just records prev_price, no trade
+    #   cycle 2 (price=90):  crosses down through 100 -> BUY, commits successfully
+    #   cycle 3 (price=250): crosses up through 200 -> SELL attempted, but
+    #                        insert_snapshot fails right after the in-memory
+    #                        engine.sell() already ran -> rolled back
+    #   cycle 4 (price=250 again, same candle re-served since last_ts never
+    #            advanced): SELL retried
+    #
+    # NOTE: intentionally does NOT assert against the `engine` object passed into
+    # run_polling_loop -- reassigning `engine` inside the function only rebinds
+    # that local name, it never updates the caller's own reference, so an
+    # assertion against this test's own `engine` variable would not observe the
+    # fix at all (and would be exactly the kind of vacuous test earlier rounds
+    # were built to avoid). Instead this checks black-box DB consistency: a fresh
+    # reconstruct_engine_from_db() call must agree with the last durable snapshot.
+    monkeypatch.setattr("live_engine.time.sleep", lambda s: None)
+    calls = {"n": 0}
+    real_insert_snapshot = db.repository.insert_snapshot
+
+    def _fail_on_third_call(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 3:
+            raise RuntimeError("boom during SELL cycle")
+        return real_insert_snapshot(*args, **kwargs)
+
+    monkeypatch.setattr("live_engine.insert_snapshot", _fail_on_third_call)
+
+    provider = SequenceProvider([_kline(0, "150"), _kline(300_000, "90"), _kline(600_000, "250")])
+    engine = FifoEngine(initial_cash=Decimal("1000"), fee_pct=Decimal("0.001"))
+    params = {"lower_bound": 100, "upper_bound": 200, "n_levels": 1,
+              "spacing": "arithmetic", "order_size_quote": 100}
+    failures = []
+
+    run_polling_loop(
+        conn, provider, engine, "BTCUSDT", "grid", params,
+        poll_interval="5m", poll_interval_seconds=300,
+        on_critical_failure=failures.append, max_cycles=4,
+        initial_cash=Decimal("1000"),
+    )
+
+    assert len(failures) == 1
+
+    # The SELL genuinely happened durably (on the retry, cycle 4) -- confirms
+    # this isn't a trivial "nothing happened" pass.
+    sell_rows = conn.execute(
+        "SELECT realized_pnl FROM trades WHERE symbol = 'BTCUSDT' AND side = 'SELL'"
+    ).fetchall()
+    assert len(sell_rows) == 1
+    expected_pnl = Decimal(sell_rows[0]["realized_pnl"])
+    assert expected_pnl == Decimal("99.8")
+
+    # The last durable snapshot's realized_pnl_cumule column must match a FRESH
+    # reconstruction from the DB -- not a phantom value carried over from the
+    # rolled-back cycle 3 attempt via the poisoned in-memory engine.
+    last_snapshot = conn.execute(
+        "SELECT * FROM portfolio_snapshots WHERE symbol = 'BTCUSDT' ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    restored = reconstruct_engine_from_db(conn, "BTCUSDT", initial_cash=Decimal("1000"), fee_pct=Decimal("0.001"))
+
+    assert restored.realized_pnl_cumule("BTCUSDT") == expected_pnl
+    assert Decimal(last_snapshot["realized_pnl_cumule"]) == restored.realized_pnl_cumule("BTCUSDT")
