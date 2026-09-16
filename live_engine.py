@@ -214,15 +214,16 @@ def fetch_with_retry(
     """Spec section 5: 1 retry with exponential backoff (1s, then 4s); after 3
     consecutive failures, calls on_critical_failure and returns [] rather than
     raising -- a bad cycle must never crash the polling loop."""
+    max_attempts = len(_RETRY_BACKOFF_SECONDS) + 1
     attempts = 0
     last_error: Exception | None = None
-    while attempts < 3:
+    while attempts < max_attempts:
         try:
             return _fetch_latest_closed_kline(provider, symbol, poll_interval)
         except httpx.HTTPError as e:
             last_error = e
             attempts += 1
-            if attempts < 3:
+            if attempts < max_attempts:
                 time.sleep(_RETRY_BACKOFF_SECONDS[attempts - 1])
     on_critical_failure(f"Echec API repete pour {symbol} apres 3 tentatives: {last_error}")
     return []
@@ -239,16 +240,30 @@ def run_polling_loop(
     poll_interval_seconds: int,
     on_critical_failure: Callable[[str], None],
     max_cycles: int | None = None,
+    retention_days: int | None = None,
 ) -> None:
     # Owned here, for the lifetime of this process: see Task 6's interface notes
     # on why trade_id_map is never persisted to the DB.
     trade_id_map: dict[int, int] = {}
     cycles = 0
+    last_housekeeping_day: int | None = None
     while max_cycles is None or cycles < max_cycles:
-        run_cycle(
-            conn, provider, engine, symbol, strategy_type, params, poll_interval, trade_id_map,
-            fetch_fn=lambda: fetch_with_retry(provider, symbol, poll_interval, on_critical_failure),
-        )
+        try:
+            run_cycle(
+                conn, provider, engine, symbol, strategy_type, params, poll_interval, trade_id_map,
+                fetch_fn=lambda: fetch_with_retry(provider, symbol, poll_interval, on_critical_failure),
+            )
+        except Exception as e:
+            logger.exception("Cycle en echec pour %s/%s, cycle ignore.", symbol, strategy_type)
+            on_critical_failure(f"Exception non geree pendant le cycle pour {symbol}: {e}")
+
+        if retention_days is not None:
+            now_ms = int(time.time() * 1000)
+            today = now_ms // DAY_MS
+            if today != last_housekeeping_day:
+                aggregate_old_snapshots(conn, now_ms=now_ms, retention_days=retention_days)
+                last_housekeeping_day = today
+
         cycles += 1
         if max_cycles is None or cycles < max_cycles:
             time.sleep(poll_interval_seconds)
@@ -258,7 +273,7 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     cfg = load_config()
     provider = build_provider(cfg.data_source)
-    conn = init_db("crypto_sim.db")
+    conn = init_db(cfg.db_path)
 
     symbol = cfg.live.active_symbol
     strategy_type = cfg.live.active_strategy
@@ -274,12 +289,18 @@ def main() -> None:
         logger.critical(message)
 
     logger.info("Demarrage du moteur live: %s / %s", symbol, strategy_type)
-    run_polling_loop(
-        conn, provider, engine, symbol, strategy_type, params,
-        poll_interval=cfg.live.poll_kline_interval,
-        poll_interval_seconds=cfg.live.poll_interval_seconds,
-        on_critical_failure=on_critical_failure,
-    )
+    try:
+        run_polling_loop(
+            conn, provider, engine, symbol, strategy_type, params,
+            poll_interval=cfg.live.poll_kline_interval,
+            poll_interval_seconds=cfg.live.poll_interval_seconds,
+            on_critical_failure=on_critical_failure,
+            retention_days=cfg.snapshots.retention_detail_days,
+        )
+    except KeyboardInterrupt:
+        logger.info("Arret demande (Ctrl+C).")
+    finally:
+        conn.close()
 
 
 if __name__ == "__main__":
