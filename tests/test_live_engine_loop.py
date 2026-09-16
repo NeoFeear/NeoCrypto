@@ -5,6 +5,7 @@ import pytest
 import db.repository
 from db.migrate import init_db
 from db.repository import insert_snapshot
+from discord_notifier import DiscordWebhooks
 from engine.fifo_engine import FifoEngine
 from housekeeping import DAY_MS
 from live_engine import reconstruct_engine_from_db, run_polling_loop
@@ -77,6 +78,7 @@ def test_run_polling_loop_stops_after_max_cycles_and_processes_new_candles(conn,
         conn, provider, engine, "BTCUSDT", "buy_hold", params,
         poll_interval="5m", poll_interval_seconds=300,
         on_critical_failure=lambda msg: None, initial_cash=Decimal("1000"), max_cycles=3,
+        discord_webhooks=DiscordWebhooks(daily_summary="", transactions="", alerts="", logs=""),
     )
 
     # buy_hold only ever buys once, on the first genuinely-new candle it sees
@@ -94,6 +96,7 @@ def test_run_polling_loop_sleeps_between_cycles(conn, monkeypatch):
         conn, provider, engine, "BTCUSDT", "buy_hold", {"invest_at": "start"},
         poll_interval="5m", poll_interval_seconds=300,
         on_critical_failure=lambda msg: None, initial_cash=Decimal("1000"), max_cycles=2,
+        discord_webhooks=DiscordWebhooks(daily_summary="", transactions="", alerts="", logs=""),
     )
 
     # No sleep after the final cycle (mirrors Plan 1's pagination convention of no
@@ -114,6 +117,7 @@ def test_run_polling_loop_requires_initial_cash_no_silent_gap(conn):
             conn, provider, engine, "BTCUSDT", "buy_hold", {"invest_at": "start"},
             poll_interval="5m", poll_interval_seconds=300,
             on_critical_failure=lambda msg: None, max_cycles=1,
+            discord_webhooks=DiscordWebhooks(daily_summary="", transactions="", alerts="", logs=""),
         )
 
 
@@ -127,6 +131,7 @@ def test_run_polling_loop_survives_unhandled_exception_and_continues_next_cycle(
         conn, provider, engine, "BTCUSDT", "buy_hold", {"invest_at": "start"},
         poll_interval="5m", poll_interval_seconds=300,
         on_critical_failure=failures.append, initial_cash=Decimal("1000"), max_cycles=2,
+        discord_webhooks=DiscordWebhooks(daily_summary="", transactions="", alerts="", logs=""),
     )
 
     # First cycle's unhandled RuntimeError must not propagate out of the loop.
@@ -174,6 +179,7 @@ def test_run_polling_loop_rolls_back_partial_cycle_so_signal_is_not_replayed(con
         conn, provider, engine, "BTCUSDT", "buy_hold", {"invest_at": "start"},
         poll_interval="5m", poll_interval_seconds=300,
         on_critical_failure=failures.append, initial_cash=Decimal("1000"), max_cycles=2,
+        discord_webhooks=DiscordWebhooks(daily_summary="", transactions="", alerts="", logs=""),
     )
 
     assert len(failures) == 1
@@ -212,6 +218,7 @@ def test_run_polling_loop_runs_daily_housekeeping_and_aggregates_old_snapshots(c
         poll_interval="5m", poll_interval_seconds=300,
         on_critical_failure=lambda msg: None, initial_cash=Decimal("1000"),
         max_cycles=1, retention_days=30,
+        discord_webhooks=DiscordWebhooks(daily_summary="", transactions="", alerts="", logs=""),
     )
 
     eth_rows = conn.execute(
@@ -279,6 +286,7 @@ def test_run_polling_loop_reconciles_in_memory_engine_with_db_after_mid_sell_rol
         poll_interval="5m", poll_interval_seconds=300,
         on_critical_failure=failures.append, max_cycles=4,
         initial_cash=Decimal("1000"),
+        discord_webhooks=DiscordWebhooks(daily_summary="", transactions="", alerts="", logs=""),
     )
 
     assert len(failures) == 1
@@ -302,3 +310,48 @@ def test_run_polling_loop_reconciles_in_memory_engine_with_db_after_mid_sell_rol
 
     assert restored.realized_pnl_cumule("BTCUSDT") == expected_pnl
     assert Decimal(last_snapshot["realized_pnl_cumule"]) == restored.realized_pnl_cumule("BTCUSDT")
+
+
+def test_run_polling_loop_sends_discord_notification_for_each_committed_trade(conn, monkeypatch):
+    monkeypatch.setattr("live_engine.time.sleep", lambda s: None)
+    sent = []
+    monkeypatch.setattr("live_engine.send_transaction", lambda webhook_url, trade: sent.append((webhook_url, trade)))
+    provider = SequenceProvider([_kline(0, "100")])
+    engine = FifoEngine(initial_cash=Decimal("1000"), fee_pct=Decimal("0.001"))
+    webhooks = DiscordWebhooks(daily_summary="", transactions="https://webhook/tx", alerts="", logs="")
+
+    run_polling_loop(
+        conn, provider, engine, "BTCUSDT", "buy_hold", {"invest_at": "start"},
+        poll_interval="5m", poll_interval_seconds=300,
+        on_critical_failure=lambda msg: None, initial_cash=Decimal("1000"),
+        max_cycles=1, discord_webhooks=webhooks,
+    )
+
+    assert len(sent) == 1
+    assert sent[0][0] == "https://webhook/tx"
+    assert sent[0][1].side.value == "BUY"
+
+
+def test_run_polling_loop_sends_no_discord_notification_when_cycle_produces_no_trade(conn, monkeypatch):
+    monkeypatch.setattr("live_engine.time.sleep", lambda s: None)
+    sent = []
+    monkeypatch.setattr("live_engine.send_transaction", lambda webhook_url, trade: sent.append((webhook_url, trade)))
+    provider = SequenceProvider([_kline(0, "100")])
+    # dca with cash=0 and amount_per_buy=50 -- total_cost (50.05) > cash_balance
+    # (0), so engine.buy() genuinely rejects and no trade is committed. (A
+    # buy_hold/cash=0 scenario would NOT work here: buy_hold computes
+    # quantity = cash_balance / price = 0, so total_cost is also exactly 0, and
+    # FifoEngine.buy()'s rejection check is strict (`total_cost > cash_balance`),
+    # so `0 > 0` is False and a trivial zero-quantity trade is NOT rejected.)
+    engine = FifoEngine(initial_cash=Decimal("0"), fee_pct=Decimal("0.001"))
+    webhooks = DiscordWebhooks(daily_summary="", transactions="https://webhook/tx", alerts="", logs="")
+    params = {"amount_per_buy": 50, "frequency_hours": 24, "reference_price": "close"}
+
+    run_polling_loop(
+        conn, provider, engine, "BTCUSDT", "dca", params,
+        poll_interval="5m", poll_interval_seconds=300,
+        on_critical_failure=lambda msg: None, initial_cash=Decimal("0"),
+        max_cycles=1, discord_webhooks=webhooks,
+    )
+
+    assert sent == []

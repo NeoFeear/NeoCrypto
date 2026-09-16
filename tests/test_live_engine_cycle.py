@@ -309,3 +309,33 @@ def test_run_cycle_final_commit_actually_persists_durably_across_rollback(conn):
     assert len(conn.execute("SELECT * FROM trades WHERE symbol = 'BTCUSDT'").fetchall()) == 1
     assert len(conn.execute("SELECT * FROM portfolio_snapshots WHERE symbol = 'BTCUSDT'").fetchall()) == 1
     assert get_engine_state(conn, "last_ts:BTCUSDT:dca") is not None
+
+
+def test_run_cycle_returns_the_trades_it_committed(conn):
+    provider = FakeProvider([_kline(0, "100")])
+    engine = FifoEngine(initial_cash=Decimal("1000"), fee_pct=Decimal("0.001"))
+    params = {"amount_per_buy": 50, "frequency_hours": 24, "reference_price": "close"}
+
+    committed = run_cycle(conn, provider, engine, "BTCUSDT", "dca", params, poll_interval="5m", trade_id_map={})
+
+    assert len(committed) == 1
+    assert committed[0].side.value == "BUY"
+
+
+def test_run_cycle_returns_empty_list_when_no_trade_happens(conn):
+    provider = FakeProvider([_kline(0, "100")])
+    engine = FifoEngine(initial_cash=Decimal("1000"), fee_pct=Decimal("0.001"))
+    # dca with cash already at 0 -- amount_per_buy=50 means total_cost (50.05) >
+    # cash_balance (0), so engine.buy() rejects (returns None) and no trade is
+    # committed. (NOTE: a buy_hold/cash=0 scenario does NOT exercise this path --
+    # buy_hold computes quantity = cash_balance / price = 0, so total_cost is also
+    # exactly 0, and FifoEngine.buy()'s rejection check is strict (`total_cost >
+    # cash_balance`), so `0 > 0` is False and a trivial zero-quantity trade is
+    # NOT rejected. dca's amount_per_buy is independent of cash_balance, so it
+    # produces a genuinely nonzero total_cost that cash=0 can't cover.)
+    engine.cash_balance = Decimal("0")
+    params = {"amount_per_buy": 50, "frequency_hours": 24, "reference_price": "close"}
+
+    committed = run_cycle(conn, provider, engine, "BTCUSDT", "dca", params, poll_interval="5m", trade_id_map={})
+
+    assert committed == []

@@ -9,6 +9,7 @@ import httpx
 from config import load_config
 from db.migrate import init_db
 from db.repository import get_engine_state, insert_snapshot, insert_trade, replace_lots_for_symbol, set_engine_state
+from discord_notifier import DiscordWebhooks, send_transaction
 from engine.fifo_engine import FifoEngine, Lot, Side, Trade
 from engine.strategies import base as strategy_base
 from engine.strategies.buy_hold import BuyHoldState, buy_hold_state_from_json, buy_hold_state_to_json
@@ -80,17 +81,17 @@ def run_cycle(
     poll_interval: str,
     trade_id_map: dict[int, int],
     fetch_fn=None,
-) -> None:
+) -> list[Trade]:
     klines = fetch_fn() if fetch_fn is not None else _fetch_latest_closed_kline(provider, symbol, poll_interval)
     if not klines:
         logger.debug("Aucune bougie recue pour %s, cycle ignore.", symbol)
-        return
+        return []
     k = klines[-1]
 
     last_ts_raw = get_engine_state(conn, _last_processed_key(symbol, strategy_type))
     if last_ts_raw is not None and int(last_ts_raw) >= k.open_time_ms:
         logger.debug("Bougie deja traitee pour %s/%s (ts=%s), cycle ignore.", symbol, strategy_type, k.open_time_ms)
-        return
+        return []
 
     trades_before = len(engine.trades)
 
@@ -104,7 +105,8 @@ def run_cycle(
     else:
         raise ValueError(f"strategie inconnue: {strategy_type}")
 
-    for trade in engine.trades[trades_before:]:
+    new_trades = engine.trades[trades_before:]
+    for trade in new_trades:
         db_trade_id = insert_trade(conn, trade, commit=False)
         trade_id_map[trade.id] = db_trade_id
 
@@ -141,6 +143,11 @@ def run_cycle(
     # without its matching "processed" marker), and a crash never replays a
     # signal on the next cycle.
     conn.commit()
+    # Only report trades as "happened" after the commit above succeeds --
+    # returning new_trades before this point (or reporting them if commit()
+    # were to raise) would let the caller announce a trade to Discord that
+    # never actually became durable.
+    return new_trades
 
 
 def reconstruct_engine_from_db(
@@ -240,6 +247,7 @@ def run_polling_loop(
     poll_interval_seconds: int,
     on_critical_failure: Callable[[str], None],
     initial_cash: Decimal,
+    discord_webhooks: DiscordWebhooks,
     max_cycles: int | None = None,
     retention_days: int | None = None,
 ) -> None:
@@ -250,10 +258,12 @@ def run_polling_loop(
     last_housekeeping_day: int | None = None
     while max_cycles is None or cycles < max_cycles:
         try:
-            run_cycle(
+            committed_trades = run_cycle(
                 conn, provider, engine, symbol, strategy_type, params, poll_interval, trade_id_map,
                 fetch_fn=lambda: fetch_with_retry(provider, symbol, poll_interval, on_critical_failure),
             )
+            for trade in committed_trades:
+                send_transaction(discord_webhooks.transactions, trade)
 
             if retention_days is not None:
                 now_ms = int(time.time() * 1000)
@@ -327,6 +337,9 @@ def main() -> None:
             on_critical_failure=on_critical_failure,
             retention_days=cfg.snapshots.retention_detail_days,
             initial_cash=cfg.backtest.initial_capital,
+            # Placeholder until Task 7 wires in load_discord_webhooks() alongside
+            # the rest of main()'s Discord setup.
+            discord_webhooks=DiscordWebhooks(daily_summary="", transactions="", alerts="", logs=""),
         )
     except KeyboardInterrupt:
         logger.info("Arret demande (Ctrl+C).")
