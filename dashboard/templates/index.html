@@ -25,6 +25,23 @@
 <p>Aucune donnee de portefeuille pour {{ active_symbol }} pour l'instant.</p>
 {% endif %}
 
+<canvas id="portfolio-chart" height="80"></canvas>
+<script>
+new Chart(document.getElementById("portfolio-chart"), {
+    type: "line",
+    data: {
+        labels: {{ chart_labels_json | safe }},
+        datasets: [{
+            label: "Valeur totale (Note: pas d'axe prix -- portfolio_snapshots ne stocke pas le prix marche)",
+            data: {{ chart_values_json | safe }}.map(Number),
+            borderColor: "#93c5fd",
+            tension: 0.1,
+        }],
+    },
+    options: { scales: { x: { display: false } } },
+});
+</script>
+
 <h2>Dernier backtest comparatif -- {{ active_symbol }}</h2>
 {% if backtest_rows %}
 <table>

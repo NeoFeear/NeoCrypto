@@ -89,3 +89,16 @@ def test_index_with_no_snapshots_yet_does_not_crash(tmp_path, monkeypatch):
     response = client.get("/?symbol=BTCUSDT")
 
     assert response.status_code == 200
+
+
+def test_index_embeds_chart_data_as_json(monkeypatch, sample_backtest_csv):
+    monkeypatch.setattr("dashboard.app.get_conn", lambda: _seeded_conn())
+    monkeypatch.setattr("dashboard.app._active_symbol_default", lambda: "BTCUSDT")
+    monkeypatch.setattr("dashboard.app._initial_capital", lambda: Decimal("1000"))
+
+    response = client.get("/?symbol=BTCUSDT")
+
+    assert response.status_code == 200
+    assert "new Chart(" in response.text
+    assert '"1000"' in response.text  # first snapshot's total_value, as a JSON string
+    assert '"1050"' in response.text  # second snapshot's total_value

@@ -1,5 +1,6 @@
 # dashboard/app.py
 import csv
+import json
 import sqlite3
 from decimal import Decimal
 from pathlib import Path
@@ -64,10 +65,15 @@ def index(request: Request, symbol: str | None = None) -> HTMLResponse:
 
     backtest_rows = [row for row in _read_backtest_report() if row["symbol"] == active_symbol]
 
+    chart_labels = [s.timestamp for s in snapshots]
+    chart_values = [str(s.total_value) for s in snapshots]
+
     return templates.TemplateResponse(request, "index.html", {
         "symbols": symbols,
         "active_symbol": active_symbol,
         "latest": latest,
         "return_pct": return_pct,
         "backtest_rows": backtest_rows,
+        "chart_labels_json": json.dumps(chart_labels),
+        "chart_values_json": json.dumps(chart_values),
     })
