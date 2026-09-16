@@ -147,9 +147,81 @@ Fusionné sur `master` en local le 2026-09-16 (146/146). Push vers
 `origin` retardé jusqu'à la fin des 6 plans, sur instruction explicite
 de Florian.
 
+## Plan 4/6 — Discord ✅ terminé (2026-09-17)
+
+`discord_notifier.py` (webhooks `.env`, `httpx` direct, pas de
+`discord.py`) branché sur le moteur live du Plan 3 : confirmations de
+transaction colorées, résumé quotidien 8h Europe/Paris (POST puis PATCH,
+jamais dupliqué), alertes seuil (drawdown configurable, échec API,
+arrêt anormal), logs démarrage/arrêt. `test_notifier.py` pour validation
+visuelle indépendante.
+
+- [x] Task 1 — Config webhooks `.env` + helper HTTP bas niveau (retry 429 unique, ne lève jamais)
+- [x] Task 2 — `send_transaction` (gris achat, vert gain, rouge perte)
+- [x] Task 3 — `send_alert` + `send_log`
+- [x] Task 4 — `send_daily_summary` (POST-ou-PATCH idempotent)
+- [x] Task 5 — `test_notifier.py` (script de validation visuelle manuelle)
+- [x] Task 6 — `run_cycle` retourne ses trades commités ; `send_transaction` branché dans la boucle (1 défaut de plan repéré et corrigé par l'implémenteur, pas un bug de code : le scénario de test "aucun trade" du plan utilisait buy_hold/cash=0, qui ne produit pas un vrai rejet — substitué par dca)
+- [x] Task 7 — Alerte drawdown configurable (`config.yaml`), anti-spam à seuil (2 sites d'appel supplémentaires trouvés et corrigés par l'implémenteur au-delà de la liste du plan)
+- [x] Task 8 — Résumé quotidien programmé 8h Europe/Paris (1 correctif d'environnement repéré : `zoneinfo` sans base IANA sur Windows, `tzdata` ajouté en dépendance conditionnelle `win32` uniquement)
+- [x] Task 9 — `send_log`/`send_alert` branchés dans `main()` (démarrage, arrêt normal, arrêt anormal)
+- [x] Task 10 — Mise à jour README
+- [x] Task 11 — Vérification complète de la suite (173/173)
+
+## Revue finale du Plan 4 (1 tour de correctifs)
+
+La revue globale a trouvé 3 problèmes importants, tous des angles morts
+d'intégration entre tâches, invisibles tâche par tâche — le même
+type de piège que le Plan 3 ("effet de bord avant que son propre état
+ne soit durable"), ici sur les notifications plutôt que sur les trades :
+
+- Important : `_post_embed`/`_patch_embed` pouvaient encore lever malgré
+  leur contrat "ne plante jamais l'appelant" — 3 chemins d'échappement
+  vérifiés empiriquement (`KeyError` sur une réponse 2xx sans champ
+  `id`, `JSONDecodeError` sur un corps non-JSON, `httpx.InvalidURL` —
+  confirmé n'être PAS une sous-classe de `httpx.HTTPError`).
+- Important : le flag "déjà alerté" de l'alerte drawdown n'était pas
+  durable avant l'envoi HTTP — si `_check_daily_summary` levait dans le
+  même cycle, le rollback de l'appelant effaçait le flag alors que
+  l'alerte était déjà envoyée, causant des ré-alertes en boucle (3
+  alertes dupliquées reproduites empiriquement sur 3 cycles).
+- Important : le résumé quotidien pouvait être posté deux fois pour le
+  même jour, même défaut — un crash entre l'envoi réussi et le commit
+  différé de l'id du message laissait un message orphelin, provoquant
+  un second POST au lieu d'un PATCH (2 ids distincts reproduits
+  empiriquement pour un même jour).
+- Différé explicitement à Plan 6 : pas de gestionnaire SIGTERM — un
+  `systemctl stop` sous le déploiement systemd prévu ne déclenche ni
+  `send_log` d'arrêt ni les blocs `except`/`finally` (comportement par
+  défaut de Python sur SIGTERM).
+
+Tous corrigés en 1 tour de correctifs + re-revue, même méthodologie que
+le Plan 3 (vérification indépendante des tests de régression contre une
+copie du code d'avant correctif, pas seulement confiance dans le
+rapport). 173 → 177 tests.
+
+## Décisions / rulings notables (Plan 4)
+
+- Task 7 : au-delà des 9 sites d'appel de `run_polling_loop` listés dans
+  le plan, l'implémenteur a trouvé et corrigé main()'s propre appel et
+  `tests/test_backtest_main.py`'s `_fake_config()`, tous deux cassés
+  silencieusement par le nouveau paramètre requis `discord.alert_
+  drawdown_threshold_pct` sur `Config`.
+- Résidu accepté (pas de nouveau tour) : `_post_embed`'s parsing de
+  `Retry-After` via `float(...)` lèverait sur un format date RFC 7231
+  plutôt que numérique — Discord documente exclusivement un format
+  numérique en secondes, donc atteignabilité quasi nulle en pratique.
+- Même limitation de schéma que le Plan 3 (I6 déjà noté) : les clés
+  d'état des notifications (peak drawdown, résumé quotidien) sont
+  indexées par (symbole, stratégie), mais `portfolio_snapshots` reste
+  indexé par symbole seul — cohérent avec la limitation déjà connue,
+  pas un nouveau problème.
+
+Fusionné sur `master` en local le 2026-09-17 (177/177). Push vers
+`origin` toujours retardé jusqu'à la fin des 6 plans.
+
 ## À venir
 
-Plan 4/6 — Discord (`discord_notifier.py`/`test_notifier.py`, webhooks
-réels déjà dans `.env` depuis le 2026-09-16, prêts à être branchés).
 Plan 5/6 — Dashboard FastAPI.
-Plan 6/6 — `setup.sh` + systemd + déploiement LXC CT303 sur Proxmox.
+Plan 6/6 — `setup.sh` + systemd + déploiement LXC CT303 sur Proxmox
+(inclura le gestionnaire SIGTERM différé du Plan 4).
