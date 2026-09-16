@@ -137,4 +137,16 @@ def reconstruct_engine_from_db(
         )
         for row in lot_rows
     ]
+
+    # Seed the internal trade and lot id counters past the highest ids already in
+    # use in the DB. Without this, a post-restart engine's first new trade will get
+    # internal id=1, which collides with any pre-restart trade that also has id=1,
+    # causing trade_id_map.get(1, ...) to incorrectly translate old lots' fks to the
+    # new trade's real db id, silently corrupting open positions across restarts.
+    max_trade_id_row = conn.execute("SELECT MAX(id) AS max_id FROM trades").fetchone()
+    engine._next_trade_id = (max_trade_id_row["max_id"] or 0) + 1
+
+    max_lot_id_row = conn.execute("SELECT MAX(id) AS max_id FROM lots").fetchone()
+    engine._next_lot_id = (max_lot_id_row["max_id"] or 0) + 1
+
     return engine

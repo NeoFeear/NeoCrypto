@@ -192,3 +192,43 @@ def test_reconstruct_engine_from_db_reconstructed_lots_need_no_further_translati
     lots_after = conn.execute("SELECT trade_id_achat FROM lots").fetchall()
     assert len(lots_after) == 1
     assert lots_after[0]["trade_id_achat"] == original_trade_id
+
+
+def test_reconstruct_engine_from_db_new_trade_after_restart_does_not_corrupt_old_lot_fk(conn):
+    # Reproduce the critical bug: if a reconstructed engine's _next_trade_id isn't
+    # seeded past the max existing db trade id, the first new trade after restart
+    # gets an engine-internal id that collides with a pre-restart trade's real db id.
+    # When the old lot (whose trade_id_achat correctly points to the old trade) gets
+    # resynced, trade_id_map.get(1, 1) returns the NEW trade's db id instead of
+    # leaving 1 alone, silently corrupting the old lot's foreign key.
+    #
+    # 2 levels: lower=100, upper=200, n_levels=2 -> level0(100,150), level1(150,200)
+    params = {"lower_bound": 100, "upper_bound": 200, "n_levels": 2,
+              "spacing": "arithmetic", "order_size_quote": 150}
+    engine = FifoEngine(initial_cash=Decimal("1000"), fee_pct=Decimal("0.001"))
+    trade_id_map: dict[int, int] = {}
+
+    # Pre-restart: only level1 (buy=150) fills. Price path: 200 -> 140 crosses
+    # level1's buy_price (150) downward but NOT level0's (100).
+    provider = FakeProvider([_kline(0, "200"), _kline(300_000, "140")])
+    run_cycle(conn, provider, engine, "BTCUSDT", "grid", params, poll_interval="5m", trade_id_map=trade_id_map)
+    run_cycle(conn, provider, engine, "BTCUSDT", "grid", params, poll_interval="5m", trade_id_map=trade_id_map)
+
+    old_lot_row = conn.execute("SELECT * FROM lots WHERE symbol = 'BTCUSDT'").fetchone()
+    assert Decimal(old_lot_row["prix_achat"]) == Decimal("150")
+    old_trade_id_achat = old_lot_row["trade_id_achat"]
+
+    # Simulate a restart: fresh engine reconstructed from the DB, fresh (empty)
+    # trade_id_map, fresh GridState reconstructed from persisted engine_state.
+    restored = reconstruct_engine_from_db(conn, "BTCUSDT", initial_cash=Decimal("1000"), fee_pct=Decimal("0.001"))
+    new_trade_id_map: dict[int, int] = {}
+
+    # Post-restart: level0 (buy=100) now fills -- a genuinely new, unrelated trade.
+    provider2 = FakeProvider([_kline(600_000, "90")])
+    run_cycle(conn, provider2, restored, "BTCUSDT", "grid", params, poll_interval="5m", trade_id_map=new_trade_id_map)
+
+    lots_after = conn.execute("SELECT * FROM lots WHERE symbol = 'BTCUSDT' ORDER BY prix_achat").fetchall()
+    assert len(lots_after) == 2
+    old_lot_after = next(l for l in lots_after if Decimal(l["prix_achat"]) == Decimal("150"))
+    # The old lot's FK must be untouched -- this is what the reviewer proved breaks without the fix.
+    assert old_lot_after["trade_id_achat"] == old_trade_id_achat
