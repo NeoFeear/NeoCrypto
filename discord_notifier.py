@@ -110,3 +110,33 @@ def send_transaction(webhook_url: str, trade: Trade) -> None:
         "timestamp": None,
     }
     _post_embed(webhook_url, {"embeds": [embed]})
+
+
+_COLOR_CRITICAL = 0xE74C3C
+_COLOR_WARNING = 0xE67E22
+_COLOR_LOG = 0x3498DB
+
+_ALERT_COLORS = {"critical": _COLOR_CRITICAL, "warning": _COLOR_WARNING}
+
+
+def send_alert(webhook_url: str, alert_type: str, message: str, severity: str) -> None:
+    """Spec section 7: only for a real threshold crossing (drawdown > seuil
+    configure, service arrete de facon inattendue, 3 echecs API consecutifs)
+    -- never a periodic heartbeat."""
+    embed = {
+        "title": f"Alerte: {alert_type}",
+        "description": message,
+        "color": _ALERT_COLORS.get(severity, _COLOR_WARNING),
+    }
+    _post_embed(webhook_url, {"embeds": [embed]})
+
+
+def send_log(webhook_url: str, message: str, level: str) -> None:
+    """Spec section 7: only for service start/stop -- no other runtime
+    logging goes to Discord."""
+    embed = {
+        "title": f"Log {level}",
+        "description": message,
+        "color": _COLOR_LOG,
+    }
+    _post_embed(webhook_url, {"embeds": [embed]})

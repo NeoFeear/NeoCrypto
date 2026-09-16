@@ -238,3 +238,47 @@ def test_send_transaction_embed_has_no_float_values(monkeypatch):
 
     fields_text = str(captured["embed"]["embeds"][0]["fields"])
     assert "50000" in fields_text  # price rendered as a formatted string, not repr(float)
+
+
+from discord_notifier import send_alert, send_log
+
+
+def test_send_alert_critical_is_red(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(
+        "discord_notifier._post_embed",
+        lambda url, embed: captured.update(embed=embed) or "1",
+    )
+
+    send_alert("https://webhook", "api_error", "3 echecs consecutifs pour BTCUSDT", severity="critical")
+
+    embed = captured["embed"]["embeds"][0]
+    assert embed["color"] == 0xE74C3C
+    assert "api_error" in embed["title"]
+    assert "3 echecs consecutifs" in embed["description"]
+
+
+def test_send_alert_warning_is_orange(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(
+        "discord_notifier._post_embed",
+        lambda url, embed: captured.update(embed=embed) or "1",
+    )
+
+    send_alert("https://webhook", "drawdown", "Drawdown de 12.3% pour BTCUSDT", severity="warning")
+
+    assert captured["embed"]["embeds"][0]["color"] == 0xE67E22
+
+
+def test_send_log_sends_plain_message(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(
+        "discord_notifier._post_embed",
+        lambda url, embed: captured.update(embed=embed) or "1",
+    )
+
+    send_log("https://webhook", "Moteur live demarre pour BTCUSDT/dca", level="INFO")
+
+    embed = captured["embed"]["embeds"][0]
+    assert "Moteur live demarre" in embed["description"]
+    assert "INFO" in embed["title"]
