@@ -5,6 +5,8 @@ from dataclasses import dataclass
 import httpx
 from dotenv import dotenv_values
 
+from engine.fifo_engine import Side, Trade
+
 logger = logging.getLogger(__name__)
 
 _TIMEOUT_SECONDS = 10
@@ -74,3 +76,37 @@ def _patch_embed(webhook_url: str, message_id: str, embed: dict) -> bool:
     except httpx.HTTPError as e:
         logger.warning("Edition Discord echouee: %s", e)
         return False
+
+
+_COLOR_BUY = 0x95A5A6
+_COLOR_GAIN = 0x2ECC71
+_COLOR_LOSS = 0xE74C3C
+
+
+def send_transaction(webhook_url: str, trade: Trade) -> None:
+    """Spec section 7: 1 embed per trade that actually executed -- never for
+    a no-op cycle, never for a rejected order. Grey for a BUY, green for a
+    SELL at gain or breakeven, red for a SELL at a loss."""
+    if trade.side == Side.BUY:
+        color = _COLOR_BUY
+    else:
+        color = _COLOR_GAIN if trade.realized_pnl is not None and trade.realized_pnl >= 0 else _COLOR_LOSS
+
+    fields = [
+        {"name": "Symbole", "value": str(trade.symbol), "inline": True},
+        {"name": "Prix", "value": str(trade.price), "inline": True},
+        {"name": "Quantite", "value": str(trade.quantity), "inline": True},
+        {"name": "Frais", "value": str(trade.fee_amount), "inline": True},
+        {"name": "Solde apres", "value": str(trade.cash_balance_after), "inline": True},
+        {"name": "Strategie", "value": trade.strategy_name, "inline": True},
+    ]
+    if trade.realized_pnl is not None:
+        fields.append({"name": "PnL realise", "value": str(trade.realized_pnl), "inline": True})
+
+    embed = {
+        "title": f"{trade.side.value} {trade.symbol}",
+        "color": color,
+        "fields": fields,
+        "timestamp": None,
+    }
+    _post_embed(webhook_url, {"embeds": [embed]})

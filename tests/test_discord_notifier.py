@@ -158,3 +158,83 @@ def test_patch_embed_failure_returns_false_never_raises(monkeypatch):
     monkeypatch.setattr(httpx, "patch", lambda *a, **k: FakeResponse())
 
     assert _patch_embed("https://discord.com/api/webhooks/1/aaa", "999", {"title": "edited"}) is False
+
+
+from decimal import Decimal
+
+from engine.fifo_engine import Side, Trade
+from discord_notifier import send_transaction
+
+
+def _trade(side: Side, realized_pnl) -> Trade:
+    return Trade(
+        id=1, timestamp=1_700_000_000_000, symbol="BTCUSDT", side=side,
+        price=Decimal("50000"), quantity=Decimal("0.01"), fee_pct=Decimal("0.001"),
+        fee_amount=Decimal("0.5"), total_cost=Decimal("500.5"),
+        realized_pnl=realized_pnl, cash_balance_after=Decimal("499.5"),
+        strategy_name="dca",
+    )
+
+
+def test_send_transaction_buy_is_grey(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(
+        "discord_notifier._post_embed",
+        lambda url, embed: captured.update(embed=embed) or "1",
+    )
+
+    send_transaction("https://webhook", _trade(Side.BUY, None))
+
+    embed = captured["embed"]["embeds"][0]
+    assert embed["color"] == 0x95A5A6
+    assert "BUY" in embed["title"]
+    assert "BTCUSDT" in embed["title"]
+
+
+def test_send_transaction_sell_gain_is_green(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(
+        "discord_notifier._post_embed",
+        lambda url, embed: captured.update(embed=embed) or "1",
+    )
+
+    send_transaction("https://webhook", _trade(Side.SELL, Decimal("12.5")))
+
+    assert captured["embed"]["embeds"][0]["color"] == 0x2ECC71
+
+
+def test_send_transaction_sell_loss_is_red(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(
+        "discord_notifier._post_embed",
+        lambda url, embed: captured.update(embed=embed) or "1",
+    )
+
+    send_transaction("https://webhook", _trade(Side.SELL, Decimal("-3.2")))
+
+    assert captured["embed"]["embeds"][0]["color"] == 0xE74C3C
+
+
+def test_send_transaction_sell_breakeven_is_green(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(
+        "discord_notifier._post_embed",
+        lambda url, embed: captured.update(embed=embed) or "1",
+    )
+
+    send_transaction("https://webhook", _trade(Side.SELL, Decimal("0")))
+
+    assert captured["embed"]["embeds"][0]["color"] == 0x2ECC71
+
+
+def test_send_transaction_embed_has_no_float_values(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(
+        "discord_notifier._post_embed",
+        lambda url, embed: captured.update(embed=embed) or "1",
+    )
+
+    send_transaction("https://webhook", _trade(Side.BUY, None))
+
+    fields_text = str(captured["embed"]["embeds"][0]["fields"])
+    assert "50000" in fields_text  # price rendered as a formatted string, not repr(float)
