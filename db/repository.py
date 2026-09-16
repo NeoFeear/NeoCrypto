@@ -1,7 +1,7 @@
 import sqlite3
 from decimal import Decimal
 
-from engine.fifo_engine import Lot, Trade
+from engine.fifo_engine import Lot, Side, Trade
 from models import PortfolioSnapshot
 
 
@@ -86,3 +86,42 @@ def set_engine_state(conn: sqlite3.Connection, key: str, value: str, commit: boo
     )
     if commit:
         conn.commit()
+
+
+def _row_to_trade(row: sqlite3.Row) -> Trade:
+    return Trade(
+        id=row["id"], timestamp=row["timestamp"], symbol=row["symbol"],
+        side=Side(row["side"]), price=Decimal(row["price"]), quantity=Decimal(row["quantity"]),
+        fee_pct=Decimal(row["fee_pct"]), fee_amount=Decimal(row["fee_amount"]),
+        total_cost=Decimal(row["total_cost"]),
+        realized_pnl=Decimal(row["realized_pnl"]) if row["realized_pnl"] is not None else None,
+        cash_balance_after=Decimal(row["cash_balance_after"]), strategy_name=row["strategy_name"],
+    )
+
+
+def list_trades(conn: sqlite3.Connection, symbol: str | None = None) -> list[Trade]:
+    if symbol is not None:
+        rows = conn.execute("SELECT * FROM trades WHERE symbol = ? ORDER BY id DESC", (symbol,)).fetchall()
+    else:
+        rows = conn.execute("SELECT * FROM trades ORDER BY id DESC").fetchall()
+    return [_row_to_trade(row) for row in rows]
+
+
+def list_snapshots(conn: sqlite3.Connection, symbol: str) -> list[PortfolioSnapshot]:
+    rows = conn.execute(
+        "SELECT * FROM portfolio_snapshots WHERE symbol = ? ORDER BY timestamp ASC", (symbol,)
+    ).fetchall()
+    return [
+        PortfolioSnapshot(
+            timestamp=row["timestamp"], symbol=row["symbol"],
+            cash_balance=Decimal(row["cash_balance"]), position_value=Decimal(row["position_value"]),
+            total_value=Decimal(row["total_value"]), unrealized_pnl=Decimal(row["unrealized_pnl"]),
+            realized_pnl_cumule=Decimal(row["realized_pnl_cumule"]),
+        )
+        for row in rows
+    ]
+
+
+def list_symbols_with_trades(conn: sqlite3.Connection) -> list[str]:
+    rows = conn.execute("SELECT DISTINCT symbol FROM trades ORDER BY symbol").fetchall()
+    return [row["symbol"] for row in rows]

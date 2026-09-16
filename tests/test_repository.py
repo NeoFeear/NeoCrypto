@@ -8,6 +8,9 @@ from db.repository import (
     insert_lot,
     insert_snapshot,
     insert_trade,
+    list_snapshots,
+    list_symbols_with_trades,
+    list_trades,
     replace_lots_for_symbol,
     set_engine_state,
 )
@@ -134,3 +137,77 @@ def test_replace_lots_for_symbol_does_not_touch_other_symbols(conn):
 
     rows = conn.execute("SELECT * FROM lots WHERE symbol = ?", ("ETHUSDT",)).fetchall()
     assert len(rows) == 1
+
+
+def test_list_trades_returns_newest_first_with_correct_types(conn):
+    t1 = Trade(
+        id=1, timestamp=0, symbol="BTCUSDT", side=Side.BUY, price=Decimal("100"),
+        quantity=Decimal("1"), fee_pct=Decimal("0.001"), fee_amount=Decimal("0.1"),
+        total_cost=Decimal("100.1"), realized_pnl=None, cash_balance_after=Decimal("899.9"),
+        strategy_name="dca",
+    )
+    t2 = Trade(
+        id=2, timestamp=300_000, symbol="BTCUSDT", side=Side.SELL, price=Decimal("110"),
+        quantity=Decimal("1"), fee_pct=Decimal("0.001"), fee_amount=Decimal("0.11"),
+        total_cost=Decimal("109.89"), realized_pnl=Decimal("9.79"), cash_balance_after=Decimal("1009.79"),
+        strategy_name="dca",
+    )
+    insert_trade(conn, t1)
+    insert_trade(conn, t2)
+
+    trades = list_trades(conn, symbol="BTCUSDT")
+
+    assert [t.id for t in trades] == [2, 1]
+    assert trades[0].side == Side.SELL
+    assert trades[0].realized_pnl == Decimal("9.79")
+    assert trades[1].realized_pnl is None
+    assert isinstance(trades[0].price, Decimal)
+
+
+def test_list_trades_without_symbol_returns_all(conn):
+    insert_trade(conn, Trade(
+        id=1, timestamp=0, symbol="BTCUSDT", side=Side.BUY, price=Decimal("100"),
+        quantity=Decimal("1"), fee_pct=Decimal("0.001"), fee_amount=Decimal("0.1"),
+        total_cost=Decimal("100.1"), realized_pnl=None, cash_balance_after=Decimal("899.9"),
+        strategy_name="dca",
+    ))
+    insert_trade(conn, Trade(
+        id=2, timestamp=0, symbol="ETHUSDT", side=Side.BUY, price=Decimal("50"),
+        quantity=Decimal("2"), fee_pct=Decimal("0.001"), fee_amount=Decimal("0.1"),
+        total_cost=Decimal("100.1"), realized_pnl=None, cash_balance_after=Decimal("799.8"),
+        strategy_name="dca",
+    ))
+
+    trades = list_trades(conn)
+
+    assert len(trades) == 2
+
+
+def test_list_snapshots_returns_oldest_first(conn):
+    insert_snapshot(conn, PortfolioSnapshot(
+        timestamp=300_000, symbol="BTCUSDT", cash_balance=Decimal("500"), position_value=Decimal("510"),
+        total_value=Decimal("1010"), unrealized_pnl=Decimal("10"), realized_pnl_cumule=Decimal("0"),
+    ))
+    insert_snapshot(conn, PortfolioSnapshot(
+        timestamp=0, symbol="BTCUSDT", cash_balance=Decimal("500"), position_value=Decimal("500"),
+        total_value=Decimal("1000"), unrealized_pnl=Decimal("0"), realized_pnl_cumule=Decimal("0"),
+    ))
+
+    snapshots = list_snapshots(conn, "BTCUSDT")
+
+    assert [s.timestamp for s in snapshots] == [0, 300_000]
+    assert isinstance(snapshots[0].total_value, Decimal)
+
+
+def test_list_symbols_with_trades_is_alphabetical_and_distinct(conn):
+    for symbol in ("ETHUSDT", "BTCUSDT", "BTCUSDT"):
+        insert_trade(conn, Trade(
+            id=0, timestamp=0, symbol=symbol, side=Side.BUY, price=Decimal("1"),
+            quantity=Decimal("1"), fee_pct=Decimal("0.001"), fee_amount=Decimal("0"),
+            total_cost=Decimal("1"), realized_pnl=None, cash_balance_after=Decimal("999"),
+            strategy_name="dca",
+        ))
+
+    symbols = list_symbols_with_trades(conn)
+
+    assert symbols == ["BTCUSDT", "ETHUSDT"]
