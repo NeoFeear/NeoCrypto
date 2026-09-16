@@ -59,8 +59,9 @@ def run_cycle(
     params: dict,
     poll_interval: str,
     trade_id_map: dict[int, int],
+    fetch_fn=None,
 ) -> None:
-    klines = provider.get_klines(symbol, poll_interval, 0, 0, limit=1)
+    klines = fetch_fn() if fetch_fn is not None else provider.get_klines(symbol, poll_interval, 0, 0, limit=1)
     if not klines:
         logger.debug("Aucune bougie recue pour %s, cycle ignore.", symbol)
         return
@@ -179,3 +180,29 @@ def fetch_with_retry(
                 time.sleep(_RETRY_BACKOFF_SECONDS[attempts - 1])
     on_critical_failure(f"Echec API repete pour {symbol} apres 3 tentatives: {last_error}")
     return []
+
+
+def run_polling_loop(
+    conn: sqlite3.Connection,
+    provider: MarketDataProvider,
+    engine: FifoEngine,
+    symbol: str,
+    strategy_type: str,
+    params: dict,
+    poll_interval: str,
+    poll_interval_seconds: int,
+    on_critical_failure: Callable[[str], None],
+    max_cycles: int | None = None,
+) -> None:
+    # Owned here, for the lifetime of this process: see Task 6's interface notes
+    # on why trade_id_map is never persisted to the DB.
+    trade_id_map: dict[int, int] = {}
+    cycles = 0
+    while max_cycles is None or cycles < max_cycles:
+        run_cycle(
+            conn, provider, engine, symbol, strategy_type, params, poll_interval, trade_id_map,
+            fetch_fn=lambda: fetch_with_retry(provider, symbol, poll_interval, on_critical_failure),
+        )
+        cycles += 1
+        if max_cycles is None or cycles < max_cycles:
+            time.sleep(poll_interval_seconds)
