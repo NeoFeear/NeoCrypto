@@ -1,4 +1,6 @@
+from datetime import datetime
 from decimal import Decimal
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -8,7 +10,7 @@ from db.repository import insert_snapshot
 from discord_notifier import DiscordWebhooks
 from engine.fifo_engine import FifoEngine
 from housekeeping import DAY_MS
-from live_engine import reconstruct_engine_from_db, run_polling_loop
+from live_engine import _check_daily_summary, reconstruct_engine_from_db, run_polling_loop
 from market_data.provider import MarketDataProvider
 from market_data.types import Kline
 from models import PortfolioSnapshot
@@ -389,8 +391,66 @@ def test_run_polling_loop_sends_drawdown_alert_once_when_crossing_threshold(conn
     assert alerts[0] == ("drawdown", "warning")
 
 
-from datetime import datetime
-from zoneinfo import ZoneInfo
+def test_run_polling_loop_does_not_repeat_drawdown_alert_when_daily_summary_fails_same_cycle(conn, monkeypatch):
+    # Reproduces the exact bug the final review found: _check_drawdown_alert
+    # used to send the alert BEFORE its "already alerted" flag was durably
+    # committed (the actual commit happened later, in run_polling_loop, AFTER
+    # _check_daily_summary also ran). If _check_daily_summary raises in that
+    # same cycle -- e.g. because send_daily_summary itself blows up -- the
+    # except handler's conn.rollback() discarded the "already alerted" flag
+    # even though the alert had already been delivered to Discord, so the
+    # NEXT cycle re-read was_active=False and fired a duplicate alert.
+    #
+    # This test FAILS against the pre-fix code (2 alerts: cycle 2 and cycle 3
+    # both fire) and PASSES post-fix (1 alert: cycle 2 only), verified by
+    # temporarily reverting the live_engine.py fix and re-running this test.
+    monkeypatch.setattr("live_engine.time.sleep", lambda s: None)
+    now_paris = datetime(2026, 1, 15, 9, 0, tzinfo=ZoneInfo("Europe/Paris"))  # past 8h -> daily summary runs too
+    monkeypatch.setattr("live_engine.time.time", lambda: now_paris.timestamp())
+
+    alerts = []
+    monkeypatch.setattr(
+        "live_engine.send_alert",
+        lambda webhook_url, alert_type, message, severity: alerts.append((alert_type, severity)),
+    )
+    # First daily-summary call (cycle 1, before any drawdown) succeeds and
+    # durably records a message id, exactly like a real healthy day would --
+    # every call from cycle 2 onward (i.e. once the drawdown alert itself
+    # starts firing) blows up, simulating something else in that cycle's
+    # remaining processing failing.
+    daily_summary_calls = {"n": 0}
+
+    def flaky_send_daily_summary(webhook_url, **kwargs):
+        daily_summary_calls["n"] += 1
+        if daily_summary_calls["n"] == 1:
+            return "999"
+        raise RuntimeError("boom in daily summary")
+
+    monkeypatch.setattr("live_engine.send_daily_summary", flaky_send_daily_summary)
+
+    # Price crashes from 100 -> 85 (15% drop) and stays there, well past a
+    # 10% threshold, then stays flat for a 3rd cycle -- same shape as the
+    # existing "fires once" test, just with the daily-summary failure added.
+    provider = SequenceProvider([_kline(0, "100"), _kline(300_000, "85"), _kline(600_000, "85")])
+    engine = FifoEngine(initial_cash=Decimal("1000"), fee_pct=Decimal("0.001"))
+    webhooks = DiscordWebhooks(daily_summary="https://webhook/summary", transactions="", alerts="https://webhook/alerts", logs="")
+    failures = []
+
+    run_polling_loop(
+        conn, provider, engine, "BTCUSDT", "buy_hold", {"invest_at": "start"},
+        poll_interval="5m", poll_interval_seconds=300,
+        on_critical_failure=failures.append, initial_cash=Decimal("1000"),
+        max_cycles=3, discord_webhooks=webhooks, drawdown_threshold_pct=Decimal("10"),
+    )
+
+    # Daily summary blew up on cycles 2 and 3 (both after the drawdown check
+    # ran), confirming the failure really was injected where the bug needs it.
+    assert len(failures) == 2
+    # The drawdown alert must still fire exactly once across all cycles, not
+    # once per cycle -- proving the "already alerted" flag survived cycle 2's
+    # rollback because it was committed before send_alert was ever called.
+    assert len(alerts) == 1
+    assert alerts[0] == ("drawdown", "warning")
 
 
 def test_run_polling_loop_sends_daily_summary_once_past_8h_paris_then_edits_on_next_cycle(conn, monkeypatch):

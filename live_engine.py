@@ -252,15 +252,28 @@ def _check_drawdown_alert(
     set_engine_state(conn, peak_key, str(peak), commit=False)
 
     if peak <= 0:
+        conn.commit()
         return
     drawdown_pct = (peak - total_value) / peak * Decimal(100)
     was_active = get_engine_state(conn, active_key) == "1"
 
-    if drawdown_pct > threshold_pct and not was_active:
-        send_alert(webhook_url, "drawdown", f"Drawdown de {drawdown_pct:.2f}% pour {symbol}", severity="warning")
+    should_alert = drawdown_pct > threshold_pct and not was_active
+    if should_alert:
         set_engine_state(conn, active_key, "1", commit=False)
     elif drawdown_pct <= threshold_pct and was_active:
         set_engine_state(conn, active_key, "0", commit=False)
+    # Commit the state BEFORE sending -- send_alert cannot report success/
+    # failure back to us, so there is nothing to gain by waiting until after
+    # the HTTP call, and everything to lose: a crash or a later exception in
+    # this same cycle (e.g. _check_daily_summary raising) used to roll back
+    # this flag via the caller's deferred commit, even though the alert had
+    # already been delivered -- causing it to re-fire every subsequent
+    # cycle. Committing first means a failure after this point can only
+    # produce a missed alert, never a duplicate one.
+    conn.commit()
+
+    if should_alert:
+        send_alert(webhook_url, "drawdown", f"Drawdown de {drawdown_pct:.2f}% pour {symbol}", severity="warning")
 
 
 _PARIS_TZ = ZoneInfo("Europe/Paris")
