@@ -984,10 +984,14 @@ git commit -m "feat: add grid live-side state and step_grid_live() (D2 poll-to-p
 - Test: `tests/test_live_engine_cycle.py`
 
 **Interfaces:**
-- Consumes: `db.repository.{insert_trade, insert_lot, insert_snapshot, get_engine_state, set_engine_state}` (Task 2), `engine.strategies.{buy_hold, dca, grid}` state/step/JSON functions (Tasks 3-5), `engine.fifo_engine.FifoEngine` (Plan 1), `market_data.provider.MarketDataProvider` (Plan 1)
-- Produces: `run_cycle(conn: sqlite3.Connection, provider: MarketDataProvider, engine: FifoEngine, symbol: str, strategy_type: str, params: dict, poll_interval: str) -> None`
+- Consumes: `db.repository.{insert_trade, insert_snapshot, replace_lots_for_symbol, get_engine_state, set_engine_state}` (Task 2), `engine.strategies.{buy_hold, dca, grid}` state/step/JSON functions (Tasks 3-5), `engine.fifo_engine.FifoEngine` (Plan 1), `market_data.provider.MarketDataProvider` (Plan 1)
+- Produces: `run_cycle(conn: sqlite3.Connection, provider: MarketDataProvider, engine: FifoEngine, symbol: str, strategy_type: str, params: dict, poll_interval: str, trade_id_map: dict[int, int]) -> None`, `reconstruct_engine_from_db(conn: sqlite3.Connection, symbol: str, initial_cash: Decimal, fee_pct: Decimal) -> FifoEngine`
 
 One cycle: fetch the latest kline, load (or initialize) this `(symbol, strategy_type)`'s persisted state and last-processed timestamp from `engine_state`, skip if this candle was already processed (resume safety — never replay a signal), call the right strategy's `step()`, persist any new trade(s)/lot(s) the engine recorded this cycle plus a snapshot, then save the updated state and timestamp back to `engine_state`.
+
+**Why `trade_id_map` exists (a bug caught during Task 2's review, fixed here before it ever shipped):** `FifoEngine.Lot.trade_id_achat` is the engine's own private in-memory trade counter (`self._next_trade_id`, starts at 1 per engine instance) — it is NOT the SQLite-assigned `trades.id` that `insert_trade` returns. Persisting a `Lot` straight from `engine.get_lots()` into `lots.trade_id_achat` would silently write the wrong foreign key. `trade_id_map` is a plain `dict[int, int]` (engine trade id → real DB trade id) that the CALLER (Task 8's polling loop) creates once, empty, at process start and passes into every `run_cycle` call for the lifetime of that process — `run_cycle` records a new entry every time it inserts a trade, and uses the map to translate `lot.trade_id_achat` before calling `replace_lots_for_symbol`. It is deliberately never persisted to the DB or to `engine_state`: a lot reconstructed from the DB (via `reconstruct_engine_from_db`, below) already carries a real DB id in `trade_id_achat`, so translation is only ever needed for trades created since the current process started — exactly what a fresh, empty, in-memory dict gives you for free, with no stale-mapping risk across restarts.
+
+**Why `reconstruct_engine_from_db` exists:** the spec requires state to "survive a reboot" — a live engine that starts every restart with a fresh, empty `FifoEngine` (zero lots, cash reset to the configured initial capital) isn't actually resuming, even though its strategy-level state (DCA's last buy time, grid's level states) does correctly resume via `engine_state`. `reconstruct_engine_from_db` rebuilds `cash_balance` from the most recent trade's `cash_balance_after` for that symbol (or leaves the configured initial capital untouched if there are no trades yet) and rebuilds `engine.lots` directly from the `lots` table — which, thanks to `replace_lots_for_symbol`'s per-cycle resync, is always an accurate mirror of the engine's last known open positions.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -999,7 +1003,7 @@ import pytest
 
 from db.migrate import init_db
 from engine.fifo_engine import FifoEngine
-from live_engine import run_cycle
+from live_engine import reconstruct_engine_from_db, run_cycle
 from market_data.provider import MarketDataProvider
 from market_data.types import BookTicker, Kline, Ticker24h
 
@@ -1041,7 +1045,7 @@ def test_run_cycle_executes_dca_buy_and_persists_trade_and_snapshot(conn):
     engine = FifoEngine(initial_cash=Decimal("1000"), fee_pct=Decimal("0.001"))
     params = {"amount_per_buy": 50, "frequency_hours": 24, "reference_price": "close"}
 
-    run_cycle(conn, provider, engine, "BTCUSDT", "dca", params, poll_interval="5m")
+    run_cycle(conn, provider, engine, "BTCUSDT", "dca", params, poll_interval="5m", trade_id_map={})
 
     assert len(engine.trades) == 1
     trades_in_db = conn.execute("SELECT * FROM trades").fetchall()
@@ -1056,9 +1060,10 @@ def test_run_cycle_skips_already_processed_candle(conn):
     provider = FakeProvider([kline, kline])  # same candle served twice
     engine = FifoEngine(initial_cash=Decimal("1000"), fee_pct=Decimal("0.001"))
     params = {"amount_per_buy": 50, "frequency_hours": 24, "reference_price": "close"}
+    trade_id_map: dict[int, int] = {}
 
-    run_cycle(conn, provider, engine, "BTCUSDT", "dca", params, poll_interval="5m")
-    run_cycle(conn, provider, engine, "BTCUSDT", "dca", params, poll_interval="5m")
+    run_cycle(conn, provider, engine, "BTCUSDT", "dca", params, poll_interval="5m", trade_id_map=trade_id_map)
+    run_cycle(conn, provider, engine, "BTCUSDT", "dca", params, poll_interval="5m", trade_id_map=trade_id_map)
 
     # Second cycle must not re-process the same candle (no duplicate BUY, no duplicate snapshot)
     assert len(engine.trades) == 1
@@ -1071,14 +1076,15 @@ def test_run_cycle_persists_and_restores_state_across_fresh_engine_instances(con
     params = {"amount_per_buy": 50, "frequency_hours": 24, "reference_price": "close"}
 
     engine1 = FifoEngine(initial_cash=Decimal("1000"), fee_pct=Decimal("0.001"))
-    run_cycle(conn, provider, engine1, "BTCUSDT", "dca", params, poll_interval="5m")
+    run_cycle(conn, provider, engine1, "BTCUSDT", "dca", params, poll_interval="5m", trade_id_map={})
 
-    # Simulate a restart: fresh engine, but lots/cash are NOT reconstructed here
-    # (that's out of scope for this task) -- what IS verified is that the
-    # persisted strategy state (last_buy_ms) prevents a second immediate buy
-    # on the very next candle, exactly as it would within one continuous run.
+    # Simulate a restart: fresh engine and a fresh (empty) trade_id_map, exactly
+    # as a real restart would have (trade_id_map is never persisted -- see Task 6's
+    # interface notes). This test isolates STRATEGY-state persistence (last_buy_ms
+    # survives via engine_state) from full portfolio reconstruction, which is
+    # `reconstruct_engine_from_db`'s job and is tested separately, below.
     engine2 = FifoEngine(initial_cash=Decimal("1000"), fee_pct=Decimal("0.001"))
-    run_cycle(conn, provider, engine2, "BTCUSDT", "dca", params, poll_interval="5m")
+    run_cycle(conn, provider, engine2, "BTCUSDT", "dca", params, poll_interval="5m", trade_id_map={})
 
     assert len(engine2.trades) == 0  # too soon since the persisted last_buy_ms (frequency_hours=24)
 
@@ -1095,10 +1101,11 @@ def test_run_cycle_grid_persists_level_state_across_calls(conn):
     provider = FakeProvider([kline_above, kline_dip])
     params = {"lower_bound": 100, "upper_bound": 200, "n_levels": 1,
               "spacing": "arithmetic", "order_size_quote": 100}
+    trade_id_map: dict[int, int] = {}
 
     engine = FifoEngine(initial_cash=Decimal("1000"), fee_pct=Decimal("0.001"))
-    run_cycle(conn, provider, engine, "BTCUSDT", "grid", params, poll_interval="5m")
-    run_cycle(conn, provider, engine, "BTCUSDT", "grid", params, poll_interval="5m")
+    run_cycle(conn, provider, engine, "BTCUSDT", "grid", params, poll_interval="5m", trade_id_map=trade_id_map)
+    run_cycle(conn, provider, engine, "BTCUSDT", "grid", params, poll_interval="5m", trade_id_map=trade_id_map)
 
     assert len(engine.trades) == 1
     assert engine.trades[0].side.value == "BUY"
@@ -1112,14 +1119,19 @@ def test_run_cycle_resyncs_lots_table_on_sell_not_just_buy(conn):
     params = {"lower_bound": 100, "upper_bound": 200, "n_levels": 1,
               "spacing": "arithmetic", "order_size_quote": 100}
     engine = FifoEngine(initial_cash=Decimal("1000"), fee_pct=Decimal("0.001"))
+    trade_id_map: dict[int, int] = {}
 
-    run_cycle(conn, provider, engine, "BTCUSDT", "grid", params, poll_interval="5m")  # records prev=150
-    run_cycle(conn, provider, engine, "BTCUSDT", "grid", params, poll_interval="5m")  # BUY at 100
+    run_cycle(conn, provider, engine, "BTCUSDT", "grid", params, poll_interval="5m", trade_id_map=trade_id_map)  # records prev=150
+    run_cycle(conn, provider, engine, "BTCUSDT", "grid", params, poll_interval="5m", trade_id_map=trade_id_map)  # BUY at 100
     lots_after_buy = conn.execute("SELECT * FROM lots WHERE symbol = 'BTCUSDT'").fetchall()
     assert len(lots_after_buy) == 1
     assert Decimal(lots_after_buy[0]["prix_achat"]) == Decimal("100")
+    # The FK now correctly points at a real trades.id, not FifoEngine's own
+    # internal trade-id counter -- verify the translation actually happened.
+    real_trade_id = conn.execute("SELECT id FROM trades WHERE side = 'BUY'").fetchone()["id"]
+    assert lots_after_buy[0]["trade_id_achat"] == real_trade_id
 
-    run_cycle(conn, provider, engine, "BTCUSDT", "grid", params, poll_interval="5m")  # SELL at 200
+    run_cycle(conn, provider, engine, "BTCUSDT", "grid", params, poll_interval="5m", trade_id_map=trade_id_map)  # SELL at 200
 
     assert len(engine.trades) == 2
     assert [t.side.value for t in engine.trades] == ["BUY", "SELL"]
@@ -1127,6 +1139,58 @@ def test_run_cycle_resyncs_lots_table_on_sell_not_just_buy(conn):
     assert lots_after_sell == []  # fully consumed -- resync correctly removed the row
     trades_in_db = conn.execute("SELECT * FROM trades").fetchall()
     assert len(trades_in_db) == 2
+
+
+def test_reconstruct_engine_from_db_rebuilds_cash_and_open_lots(conn):
+    provider = FakeProvider([_kline(0, "150"), _kline(300_000, "90")])
+    params = {"lower_bound": 100, "upper_bound": 200, "n_levels": 1,
+              "spacing": "arithmetic", "order_size_quote": 100}
+    engine = FifoEngine(initial_cash=Decimal("1000"), fee_pct=Decimal("0.001"))
+    trade_id_map: dict[int, int] = {}
+    run_cycle(conn, provider, engine, "BTCUSDT", "grid", params, poll_interval="5m", trade_id_map=trade_id_map)
+    run_cycle(conn, provider, engine, "BTCUSDT", "grid", params, poll_interval="5m", trade_id_map=trade_id_map)  # BUY at 100, cash -> 899.9
+
+    restored = reconstruct_engine_from_db(conn, "BTCUSDT", initial_cash=Decimal("1000"), fee_pct=Decimal("0.001"))
+
+    assert restored.cash_balance == Decimal("899.9")
+    restored_lots = restored.get_lots("BTCUSDT")
+    assert len(restored_lots) == 1
+    assert restored_lots[0].prix_achat == Decimal("100")
+    assert restored_lots[0].quantity_restante == Decimal("1")
+
+
+def test_reconstruct_engine_from_db_with_no_history_uses_initial_cash(conn):
+    restored = reconstruct_engine_from_db(conn, "BTCUSDT", initial_cash=Decimal("1000"), fee_pct=Decimal("0.001"))
+
+    assert restored.cash_balance == Decimal("1000")
+    assert restored.get_lots("BTCUSDT") == []
+
+
+def test_reconstruct_engine_from_db_reconstructed_lots_need_no_further_translation(conn):
+    # A lot rebuilt from the DB already carries a real trades.id in trade_id_achat
+    # (that's what was persisted). If a NEW cycle runs against the reconstructed
+    # engine with a fresh (empty) trade_id_map and doesn't trade, the existing
+    # lot's trade_id_achat must survive a resync unchanged -- proving
+    # replace_lots_for_symbol's fallback (map.get(x, x)) does the right thing
+    # for ids that were never in the map to begin with.
+    provider = FakeProvider([_kline(0, "150"), _kline(300_000, "90")])
+    params = {"lower_bound": 100, "upper_bound": 200, "n_levels": 1,
+              "spacing": "arithmetic", "order_size_quote": 100}
+    engine = FifoEngine(initial_cash=Decimal("1000"), fee_pct=Decimal("0.001"))
+    trade_id_map: dict[int, int] = {}
+    run_cycle(conn, provider, engine, "BTCUSDT", "grid", params, poll_interval="5m", trade_id_map=trade_id_map)
+    run_cycle(conn, provider, engine, "BTCUSDT", "grid", params, poll_interval="5m", trade_id_map=trade_id_map)
+    original_trade_id = conn.execute("SELECT trade_id_achat FROM lots").fetchone()["trade_id_achat"]
+
+    restored = reconstruct_engine_from_db(conn, "BTCUSDT", initial_cash=Decimal("1000"), fee_pct=Decimal("0.001"))
+    # A no-op-ish next cycle: price stays flat, no new trade, but run_cycle still
+    # resyncs lots every time it processes a new candle.
+    provider2 = FakeProvider([_kline(600_000, "150")])
+    run_cycle(conn, provider2, restored, "BTCUSDT", "grid", params, poll_interval="5m", trade_id_map={})
+
+    lots_after = conn.execute("SELECT trade_id_achat FROM lots").fetchall()
+    assert len(lots_after) == 1
+    assert lots_after[0]["trade_id_achat"] == original_trade_id
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -1143,7 +1207,7 @@ import sqlite3
 from decimal import Decimal
 
 from db.repository import get_engine_state, insert_snapshot, insert_trade, replace_lots_for_symbol, set_engine_state
-from engine.fifo_engine import FifoEngine
+from engine.fifo_engine import FifoEngine, Lot
 from engine.strategies import base as strategy_base
 from engine.strategies.buy_hold import BuyHoldState, buy_hold_state_from_json, buy_hold_state_to_json
 from engine.strategies.buy_hold import step as buy_hold_step
@@ -1193,6 +1257,7 @@ def run_cycle(
     strategy_type: str,
     params: dict,
     poll_interval: str,
+    trade_id_map: dict[int, int],
 ) -> None:
     klines = provider.get_klines(symbol, poll_interval, 0, 0, limit=1)
     if not klines:
@@ -1218,7 +1283,8 @@ def run_cycle(
         raise ValueError(f"strategie inconnue: {strategy_type}")
 
     for trade in engine.trades[trades_before:]:
-        insert_trade(conn, trade)
+        db_trade_id = insert_trade(conn, trade)
+        trade_id_map[trade.id] = db_trade_id
 
     # Resync lots from the engine's own state rather than tracking "which lot is
     # new" per trade: a BUY creates a lot, a SELL partially or fully consumes one,
@@ -1226,19 +1292,62 @@ def run_cycle(
     # individual Lot objects across multiple same-cycle inserts is fragile and
     # gets the trade/lot association wrong. engine.get_lots() is the single
     # source of truth; just mirror it.
-    replace_lots_for_symbol(conn, symbol, engine.get_lots(symbol))
+    #
+    # `Lot.trade_id_achat` is FifoEngine's own private in-memory trade counter,
+    # not the DB's real trades.id -- translate every lot's trade_id_achat through
+    # trade_id_map before persisting. A lot reconstructed from the DB already
+    # carries a real DB id in trade_id_achat and was never entered into
+    # trade_id_map this process, so `.get(x, x)` correctly leaves it untouched.
+    translated_lots = [
+        Lot(
+            id=lot.id, symbol=lot.symbol, quantity_restante=lot.quantity_restante,
+            prix_achat=lot.prix_achat, timestamp_achat=lot.timestamp_achat,
+            trade_id_achat=trade_id_map.get(lot.trade_id_achat, lot.trade_id_achat),
+        )
+        for lot in engine.get_lots(symbol)
+    ]
+    replace_lots_for_symbol(conn, symbol, translated_lots)
 
     snapshot = strategy_base.build_snapshot(engine, symbol, k.close, k.open_time_ms)
     insert_snapshot(conn, snapshot)
 
     _save_state(conn, symbol, strategy_type, state)
     set_engine_state(conn, _last_processed_key(symbol, strategy_type), str(k.open_time_ms))
+
+
+def reconstruct_engine_from_db(
+    conn: sqlite3.Connection, symbol: str, initial_cash: Decimal, fee_pct: Decimal
+) -> FifoEngine:
+    """Rebuild cash_balance and open lots from the DB so a restart genuinely
+    resumes the portfolio, not just each strategy's own state. Safe to call on
+    a symbol with no history yet (returns a fresh engine at initial_cash)."""
+    engine = FifoEngine(initial_cash=initial_cash, fee_pct=fee_pct)
+
+    last_trade = conn.execute(
+        "SELECT cash_balance_after FROM trades WHERE symbol = ? ORDER BY id DESC LIMIT 1",
+        (symbol,),
+    ).fetchone()
+    if last_trade is not None:
+        engine.cash_balance = Decimal(last_trade["cash_balance_after"])
+
+    lot_rows = conn.execute(
+        "SELECT * FROM lots WHERE symbol = ? ORDER BY timestamp_achat", (symbol,)
+    ).fetchall()
+    engine.lots = [
+        Lot(
+            id=row["id"], trade_id_achat=row["trade_id_achat"], symbol=row["symbol"],
+            quantity_restante=Decimal(row["quantity_restante"]),
+            prix_achat=Decimal(row["prix_achat"]), timestamp_achat=row["timestamp_achat"],
+        )
+        for row in lot_rows
+    ]
+    return engine
 ```
 
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `pytest tests/test_live_engine_cycle.py -v`
-Expected: PASS (5 passed)
+Expected: PASS (8 passed)
 
 - [ ] **Step 5: Commit**
 
@@ -1489,7 +1598,7 @@ Expected: FAIL with `ImportError: cannot import name 'run_polling_loop' from 'li
 
 - [ ] **Step 3: Refactor `run_cycle` and add `run_polling_loop` in `live_engine.py`**
 
-Change `run_cycle`'s signature and its first two lines (replace the existing `klines = provider.get_klines(...)` line) to accept an injectable fetch function:
+Change `run_cycle`'s signature (add `fetch_fn` as an optional keyword parameter AFTER the existing required `trade_id_map` parameter from Task 6 — do not reorder or remove `trade_id_map`) and its first two lines (replace the existing `klines = provider.get_klines(...)` line) to accept an injectable fetch function:
 
 ```python
 def run_cycle(
@@ -1500,6 +1609,7 @@ def run_cycle(
     strategy_type: str,
     params: dict,
     poll_interval: str,
+    trade_id_map: dict[int, int],
     fetch_fn=None,
 ) -> None:
     klines = fetch_fn() if fetch_fn is not None else provider.get_klines(symbol, poll_interval, 0, 0, limit=1)
@@ -1507,7 +1617,7 @@ def run_cycle(
         logger.debug("Aucune bougie recue pour %s, cycle ignore.", symbol)
         return
     k = klines[-1]
-    # ... rest of the function body is UNCHANGED from Task 6
+    # ... rest of the function body is UNCHANGED from Task 6 (still uses trade_id_map exactly as before)
 ```
 
 Append at the end of the file:
@@ -1525,10 +1635,13 @@ def run_polling_loop(
     on_critical_failure: Callable[[str], None],
     max_cycles: int | None = None,
 ) -> None:
+    # Owned here, for the lifetime of this process: see Task 6's interface notes
+    # on why trade_id_map is never persisted to the DB.
+    trade_id_map: dict[int, int] = {}
     cycles = 0
     while max_cycles is None or cycles < max_cycles:
         run_cycle(
-            conn, provider, engine, symbol, strategy_type, params, poll_interval,
+            conn, provider, engine, symbol, strategy_type, params, poll_interval, trade_id_map,
             fetch_fn=lambda: fetch_with_retry(provider, symbol, poll_interval, on_critical_failure),
         )
         cycles += 1
@@ -1754,11 +1867,16 @@ def main() -> None:
     cfg = load_config()
     provider = build_provider(cfg.data_source)
     conn = init_db("crypto_sim.db")
-    engine = FifoEngine(initial_cash=cfg.backtest.initial_capital, fee_pct=cfg.fees.default_fee_pct)
 
     symbol = cfg.live.active_symbol
     strategy_type = cfg.live.active_strategy
     params = cfg.strategy_defaults[strategy_type]
+
+    # Rebuilds cash_balance + open lots from the DB (Task 6) so a restart
+    # genuinely resumes the portfolio, not just each strategy's own state.
+    engine = reconstruct_engine_from_db(
+        conn, symbol, initial_cash=cfg.backtest.initial_capital, fee_pct=cfg.fees.default_fee_pct
+    )
 
     def on_critical_failure(message: str) -> None:
         logger.critical(message)
