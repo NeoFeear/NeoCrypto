@@ -1,6 +1,7 @@
 import logging
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from decimal import Decimal
 
 import httpx
@@ -48,7 +49,7 @@ def _post_embed(webhook_url: str, embed: dict) -> str | None:
         try:
             response = httpx.post(webhook_url, json=embed, params={"wait": "true"}, timeout=_TIMEOUT_SECONDS)
             response.raise_for_status()
-            return response.json()["id"]
+            return response.json().get("id")
         except httpx.HTTPStatusError as e:
             status = e.response.status_code
             if status == 429 and attempt == 0:
@@ -60,6 +61,18 @@ def _post_embed(webhook_url: str, embed: dict) -> str | None:
             return None
         except httpx.HTTPError as e:
             logger.warning("Envoi Discord echoue: %s", e)
+            return None
+        except Exception as e:
+            # Final safety net, additive to the two clauses above: never remove
+            # or narrow those. Catches anything they don't already -- e.g.
+            # response.json() raising json.JSONDecodeError on a non-JSON body
+            # (an intercepting proxy's HTML error page), or httpx.InvalidURL
+            # (a malformed webhook URL from a hand-edited .env), which is NOT
+            # a subclass of httpx.HTTPError. send_log is called outside
+            # main()'s try block and send_alert runs inside the polling
+            # loop's own exception handler, so this function raising at all
+            # would defeat its entire "never crash the caller" contract.
+            logger.warning("Envoi Discord echoue (erreur inattendue): %s", e)
             return None
     return None
 
@@ -76,6 +89,11 @@ def _patch_embed(webhook_url: str, message_id: str, embed: dict) -> bool:
         return True
     except httpx.HTTPError as e:
         logger.warning("Edition Discord echouee: %s", e)
+        return False
+    except Exception as e:
+        # See the matching clause in _post_embed: additive safety net for
+        # anything httpx.HTTPError doesn't already cover (e.g. httpx.InvalidURL).
+        logger.warning("Edition Discord echouee (erreur inattendue): %s", e)
         return False
 
 
@@ -108,7 +126,7 @@ def send_transaction(webhook_url: str, trade: Trade) -> None:
         "title": f"{trade.side.value} {trade.symbol}",
         "color": color,
         "fields": fields,
-        "timestamp": None,
+        "timestamp": datetime.fromtimestamp(trade.timestamp / 1000, tz=timezone.utc).isoformat(),
     }
     _post_embed(webhook_url, {"embeds": [embed]})
 

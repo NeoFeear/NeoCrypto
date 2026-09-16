@@ -62,6 +62,35 @@ def test_post_embed_empty_url_returns_none_without_calling_httpx(monkeypatch):
     assert _post_embed("", {"title": "test"}) is None
 
 
+def test_post_embed_response_missing_id_key_returns_none_never_raises(monkeypatch):
+    # A 2xx response whose body has no "id" field (e.g. an unexpected Discord
+    # response shape) must not raise KeyError -- response.json()["id"] would.
+    class FakeResponse:
+        status_code = 200
+
+        def json(self):
+            return {}
+
+        def raise_for_status(self):
+            pass
+
+    monkeypatch.setattr(httpx, "post", lambda *a, **k: FakeResponse())
+
+    assert _post_embed("https://discord.com/api/webhooks/1/aaa", {"title": "test"}) is None
+
+
+def test_post_embed_invalid_url_returns_none_never_raises(monkeypatch):
+    # httpx.InvalidURL is NOT a subclass of httpx.HTTPError (confirmed via
+    # issubclass(httpx.InvalidURL, httpx.HTTPError) is False), so only the
+    # broad `except Exception` safety net catches this.
+    def raise_invalid_url(*args, **kwargs):
+        raise httpx.InvalidURL("bad url")
+
+    monkeypatch.setattr(httpx, "post", raise_invalid_url)
+
+    assert _post_embed("not-a-valid-url", {"title": "test"}) is None
+
+
 def test_post_embed_404_logs_and_returns_none_never_raises(monkeypatch):
     class FakeResponse:
         status_code = 404
