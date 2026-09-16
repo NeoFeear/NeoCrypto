@@ -3,7 +3,7 @@ from decimal import Decimal
 import pytest
 
 from db.migrate import init_db
-from db.repository import insert_trade, replace_lots_for_symbol
+from db.repository import get_engine_state, insert_trade, replace_lots_for_symbol
 from engine.fifo_engine import FifoEngine, Lot
 from live_engine import reconstruct_engine_from_db, run_cycle
 from market_data.provider import MarketDataProvider
@@ -288,3 +288,24 @@ def test_run_cycle_is_atomic_partial_failure_leaves_nothing_committed(conn, monk
     # Without the fix, insert_trade's own internal commit() would have already
     # made the trade durable, and it would survive this rollback.
     assert conn.execute("SELECT * FROM trades WHERE symbol = 'BTCUSDT'").fetchall() == []
+
+
+def test_run_cycle_final_commit_actually_persists_durably_across_rollback(conn):
+    # Distinguishes "committed for real" from "merely visible on this same
+    # connection while a transaction is still open": every other test in this
+    # file reads back through the SAME conn that ran run_cycle, so an
+    # uncommitted transaction's writes would still be visible to those
+    # assertions even if run_cycle's final conn.commit() were deleted entirely.
+    # Calling conn.rollback() immediately after a successful run_cycle and
+    # confirming the rows survive proves they were actually committed, not just
+    # pending-and-visible.
+    provider = FakeProvider([_kline(0, "100")])
+    engine = FifoEngine(initial_cash=Decimal("1000"), fee_pct=Decimal("0.001"))
+    params = {"amount_per_buy": 50, "frequency_hours": 24, "reference_price": "close"}
+
+    run_cycle(conn, provider, engine, "BTCUSDT", "dca", params, poll_interval="5m", trade_id_map={})
+    conn.rollback()
+
+    assert len(conn.execute("SELECT * FROM trades WHERE symbol = 'BTCUSDT'").fetchall()) == 1
+    assert len(conn.execute("SELECT * FROM portfolio_snapshots WHERE symbol = 'BTCUSDT'").fetchall()) == 1
+    assert get_engine_state(conn, "last_ts:BTCUSDT:dca") is not None
