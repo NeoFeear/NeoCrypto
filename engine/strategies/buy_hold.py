@@ -23,7 +23,8 @@ def step(state: BuyHoldState, k: Kline, engine: FifoEngine, symbol: str, params:
         trade = engine.buy(k.open_time_ms, symbol, price, quantity, "buy_hold")
         if trade is None:
             logger.warning("Buy & Hold: achat initial rejete pour %s (cash insuffisant?)", symbol)
-        state.invested = True
+        else:
+            state.invested = True
 
 
 def run_buy_hold(klines: list[Kline], engine: FifoEngine, symbol: str, params: dict) -> list[PortfolioSnapshot]:
