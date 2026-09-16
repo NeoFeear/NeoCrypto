@@ -131,3 +131,98 @@ def test_grid_level_does_not_round_trip_within_same_candle():
     assert [t.side.value for t in engine.trades] == ["BUY", "SELL"]
     assert engine.trades[0].total_cost == Decimal("100.1")
     assert engine.trades[1].realized_pnl == Decimal("99.8")
+
+
+# LIVE-SIDE TESTS (Task 5: D2 live crossing rule)
+from engine.strategies.grid import (
+    GridState,
+    build_grid_state,
+    grid_state_from_json,
+    grid_state_to_json,
+    step_grid_live,
+)
+
+
+def test_step_grid_live_first_tick_never_triggers_only_records_price():
+    engine = FifoEngine(initial_cash=Decimal("1000"), fee_pct=Decimal("0.001"))
+    state = build_grid_state({"lower_bound": 100, "upper_bound": 200, "n_levels": 1,
+                               "spacing": "arithmetic", "order_size_quote": 100})
+
+    step_grid_live(state, Decimal("150"), 0, engine, "BTCUSDT",
+                    {"lower_bound": 100, "upper_bound": 200, "n_levels": 1,
+                     "spacing": "arithmetic", "order_size_quote": 100})
+
+    assert engine.trades == []
+    assert state.prev_price == Decimal("150")
+
+
+def test_step_grid_live_rearms_across_multiple_ticks():
+    engine = FifoEngine(initial_cash=Decimal("1000"), fee_pct=Decimal("0.001"))
+    params = {"lower_bound": 100, "upper_bound": 200, "n_levels": 1,
+              "spacing": "arithmetic", "order_size_quote": 100}
+    state = build_grid_state(params)
+
+    step_grid_live(state, Decimal("150"), 0, engine, "BTCUSDT", params)         # sets prev=150
+    step_grid_live(state, Decimal("90"), 1, engine, "BTCUSDT", params)          # 150>100>=90 -> BUY
+    step_grid_live(state, Decimal("250"), 2, engine, "BTCUSDT", params)         # 90<200<=250 -> SELL
+    step_grid_live(state, Decimal("90"), 3, engine, "BTCUSDT", params)          # re-arm -> BUY
+
+    assert len(engine.trades) == 3
+    assert [t.side.value for t in engine.trades] == ["BUY", "SELL", "BUY"]
+    assert engine.trades[0].total_cost == Decimal("100.1")
+    assert engine.trades[1].realized_pnl == Decimal("99.8")
+    assert engine.trades[2].total_cost == Decimal("100.1")
+    assert engine.cash_balance == Decimal("999.6")
+
+
+def test_step_grid_live_multi_level_fills_cheapest_first_rejects_rest():
+    engine = FifoEngine(initial_cash=Decimal("200"), fee_pct=Decimal("0.001"))
+    params = {"lower_bound": 100, "upper_bound": 200, "n_levels": 2,
+              "spacing": "arithmetic", "order_size_quote": 150}
+    state = build_grid_state(params)
+
+    step_grid_live(state, Decimal("200"), 0, engine, "BTCUSDT", params)  # sets prev=200
+    step_grid_live(state, Decimal("90"), 1, engine, "BTCUSDT", params)   # crosses both 150 and 100 down
+
+    assert len(engine.trades) == 1
+    assert engine.trades[0].price == Decimal("100")
+    assert engine.trades[0].quantity == Decimal("1.5")
+    assert engine.cash_balance == Decimal("49.85")
+
+
+def test_step_grid_live_does_not_round_trip_within_same_poll():
+    engine = FifoEngine(initial_cash=Decimal("1000"), fee_pct=Decimal("0.001"))
+    params = {"lower_bound": 100, "upper_bound": 200, "n_levels": 1,
+              "spacing": "arithmetic", "order_size_quote": 100}
+    state = build_grid_state(params)
+
+    step_grid_live(state, Decimal("150"), 0, engine, "BTCUSDT", params)   # sets prev=150
+    step_grid_live(state, Decimal("250"), 1, engine, "BTCUSDT", params)   # crosses buy(100)? no. crosses sell(200)? level is EMPTY, no sell possible.
+
+    # Neither buy nor sell should fire: price never touched buy_price=100 in this jump (150->250, upward)
+    assert engine.trades == []
+
+
+def test_grid_state_json_round_trip():
+    state = build_grid_state({"lower_bound": 100, "upper_bound": 200, "n_levels": 1,
+                               "spacing": "arithmetic", "order_size_quote": 100})
+    state.levels[0].state = "FILLED"
+    state.levels[0].filled_quantity = Decimal("1")
+    state.prev_price = Decimal("90")
+
+    restored = grid_state_from_json(grid_state_to_json(state))
+
+    assert restored.prev_price == Decimal("90")
+    assert restored.levels[0].state == "FILLED"
+    assert restored.levels[0].filled_quantity == Decimal("1")
+    assert restored.levels[0].buy_price == Decimal("100")
+    assert restored.levels[0].sell_price == Decimal("200")
+
+
+def test_grid_state_json_round_trip_fresh_state():
+    state = build_grid_state({"lower_bound": 100, "upper_bound": 200, "n_levels": 1,
+                               "spacing": "arithmetic", "order_size_quote": 100})
+    restored = grid_state_from_json(grid_state_to_json(state))
+    assert restored.prev_price is None
+    assert restored.levels[0].state == "EMPTY"
+    assert restored.levels[0].filled_quantity is None
