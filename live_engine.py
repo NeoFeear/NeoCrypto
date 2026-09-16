@@ -402,6 +402,8 @@ def main() -> None:
     strategy_type = cfg.live.active_strategy
     params = cfg.strategy_defaults[strategy_type]
 
+    # Rebuilds cash_balance + open lots from the DB (Task 6) so a restart
+    # genuinely resumes the portfolio, not just each strategy's own state.
     engine = reconstruct_engine_from_db(
         conn, symbol, initial_cash=cfg.backtest.initial_capital, fee_pct=cfg.fees.default_fee_pct
     )
