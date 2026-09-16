@@ -3,7 +3,8 @@ from decimal import Decimal
 import pytest
 
 from db.migrate import init_db
-from engine.fifo_engine import FifoEngine
+from db.repository import insert_trade, replace_lots_for_symbol
+from engine.fifo_engine import FifoEngine, Lot
 from live_engine import reconstruct_engine_from_db, run_cycle
 from market_data.provider import MarketDataProvider
 from market_data.types import BookTicker, Kline, Ticker24h
@@ -232,3 +233,36 @@ def test_reconstruct_engine_from_db_new_trade_after_restart_does_not_corrupt_old
     old_lot_after = next(l for l in lots_after if Decimal(l["prix_achat"]) == Decimal("150"))
     # The old lot's FK must be untouched -- this is what the reviewer proved breaks without the fix.
     assert old_lot_after["trade_id_achat"] == old_trade_id_achat
+
+
+def test_reconstruct_engine_from_db_rebuilds_trades_so_realized_pnl_cumule_survives_restart(conn):
+    # Reproduces the critical bug: reconstruct_engine_from_db rebuilt cash_balance
+    # and lots but never engine.trades, so realized_pnl_cumule() (which sums over
+    # self.trades where side == SELL) silently reported 0 after every restart,
+    # regardless of real trading history.
+    engine = FifoEngine(initial_cash=Decimal("1000"), fee_pct=Decimal("0.001"))
+    engine.buy(0, "BTCUSDT", Decimal("100"), Decimal("1"), "dca")
+    sell_trade = engine.sell(300_000, "BTCUSDT", Decimal("150"), Decimal("1"), "dca")
+    assert sell_trade.realized_pnl is not None and sell_trade.realized_pnl != Decimal("0")
+
+    # Persist both trades + lots exactly the way run_cycle does.
+    trade_id_map: dict[int, int] = {}
+    for trade in engine.trades:
+        db_trade_id = insert_trade(conn, trade)
+        trade_id_map[trade.id] = db_trade_id
+    translated_lots = [
+        Lot(
+            id=lot.id, symbol=lot.symbol, quantity_restante=lot.quantity_restante,
+            prix_achat=lot.prix_achat, timestamp_achat=lot.timestamp_achat,
+            trade_id_achat=trade_id_map.get(lot.trade_id_achat, lot.trade_id_achat),
+        )
+        for lot in engine.get_lots("BTCUSDT")
+    ]
+    replace_lots_for_symbol(conn, "BTCUSDT", translated_lots)
+
+    pre_restart_pnl = engine.realized_pnl_cumule("BTCUSDT")
+    assert pre_restart_pnl != Decimal("0")
+
+    restored = reconstruct_engine_from_db(conn, "BTCUSDT", initial_cash=Decimal("1000"), fee_pct=Decimal("0.001"))
+
+    assert restored.realized_pnl_cumule("BTCUSDT") == pre_restart_pnl

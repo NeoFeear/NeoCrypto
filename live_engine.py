@@ -162,6 +162,26 @@ def reconstruct_engine_from_db(
         for row in lot_rows
     ]
 
+    # Also rebuild engine.trades, oldest-first (matching how FifoEngine.buy()/sell()
+    # append to self.trades) -- without this, FifoEngine.realized_pnl_cumule()
+    # silently reports 0 after every restart since it sums over self.trades, which
+    # would otherwise be empty, corrupting the permanent portfolio_snapshots record
+    # with a discontinuity on every restart.
+    trade_rows = conn.execute(
+        "SELECT * FROM trades WHERE symbol = ? ORDER BY id", (symbol,)
+    ).fetchall()
+    engine.trades = [
+        Trade(
+            id=row["id"], timestamp=row["timestamp"], symbol=row["symbol"],
+            side=Side(row["side"]), price=Decimal(row["price"]), quantity=Decimal(row["quantity"]),
+            fee_pct=Decimal(row["fee_pct"]), fee_amount=Decimal(row["fee_amount"]),
+            total_cost=Decimal(row["total_cost"]),
+            realized_pnl=Decimal(row["realized_pnl"]) if row["realized_pnl"] is not None else None,
+            cash_balance_after=Decimal(row["cash_balance_after"]), strategy_name=row["strategy_name"],
+        )
+        for row in trade_rows
+    ]
+
     # Seed the internal trade and lot id counters past the highest ids already in
     # use in the DB. Without this, a post-restart engine's first new trade will get
     # internal id=1, which collides with any pre-restart trade that also has id=1,
