@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block title %}crypto-sim -- Principal{% endblock %}
+{% block content %}
+<form method="get" style="margin-bottom: 1rem;">
+    <label>Symbole :
+        <select name="symbol" onchange="this.form.submit()">
+            {% for s in symbols %}
+            <option value="{{ s }}" {% if s == active_symbol %}selected{% endif %}>{{ s }}</option>
+            {% endfor %}
+        </select>
+    </label>
+</form>
+
+{% if latest %}
+<div class="stat-tiles">
+    <div class="stat-tile"><div class="label">Valeur totale</div><div class="value">{{ latest.total_value }}</div></div>
+    <div class="stat-tile"><div class="label">PnL realise cumule</div>
+        <div class="value {% if latest.realized_pnl_cumule >= 0 %}gain{% else %}loss{% endif %}">{{ latest.realized_pnl_cumule }}</div></div>
+    <div class="stat-tile"><div class="label">PnL latent</div>
+        <div class="value {% if latest.unrealized_pnl >= 0 %}gain{% else %}loss{% endif %}">{{ latest.unrealized_pnl }}</div></div>
+    <div class="stat-tile"><div class="label">Rendement depuis le debut</div>
+        <div class="value {% if return_pct >= 0 %}gain{% else %}loss{% endif %}">{{ return_pct }}%</div></div>
+</div>
+{% else %}
+<p>Aucune donnee de portefeuille pour {{ active_symbol }} pour l'instant.</p>
+{% endif %}
+
+<h2>Dernier backtest comparatif -- {{ active_symbol }}</h2>
+{% if backtest_rows %}
+<table>
+    <tr><th>Strategie</th><th>Rendement %</th><th>Trades</th><th>Taux de reussite %</th><th>Drawdown max %</th><th>Alpha vs Buy&amp;Hold %</th></tr>
+    {% for row in backtest_rows %}
+    <tr>
+        <td>{{ row.strategy }}</td><td>{{ row.return_pct }}</td><td>{{ row.nb_trades }}</td>
+        <td>{{ row.win_rate_pct }}</td><td>{{ row.max_drawdown_pct }}</td><td>{{ row.alpha_vs_buy_hold_pct }}</td>
+    </tr>
+    {% endfor %}
+</table>
+{% else %}
+<p>Aucun resultat de backtest disponible (lancer <code>python backtest.py</code>).</p>
+{% endif %}
+{% endblock %}

@@ -1,5 +1,7 @@
 # dashboard/app.py
+import csv
 import sqlite3
+from decimal import Decimal
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -8,6 +10,7 @@ from fastapi.templating import Jinja2Templates
 
 from config import load_config
 from db.migrate import init_db
+from db.repository import list_snapshots, list_symbols_with_trades
 
 app = FastAPI()
 # Absolute path, not the relative string "dashboard/templates": a relative
@@ -27,6 +30,44 @@ def get_conn() -> sqlite3.Connection:
     return init_db(cfg.db_path)
 
 
+def _active_symbol_default() -> str:
+    return load_config().live.active_symbol
+
+
+def _initial_capital() -> Decimal:
+    return load_config().backtest.initial_capital
+
+
+def _read_backtest_report() -> list[dict]:
+    path = Path("backtest_report.csv")
+    if not path.exists():
+        return []
+    with path.open(newline="", encoding="utf-8") as f:
+        return list(csv.DictReader(f))
+
+
 @app.get("/", response_class=HTMLResponse)
-def index(request: Request) -> HTMLResponse:
-    return templates.TemplateResponse(request, "base.html", {})
+def index(request: Request, symbol: str | None = None) -> HTMLResponse:
+    conn = get_conn()
+    active_symbol = symbol or _active_symbol_default()
+    symbols = list_symbols_with_trades(conn) or [active_symbol]
+    snapshots = list_snapshots(conn, active_symbol)
+    initial_capital = _initial_capital()
+
+    if snapshots:
+        latest = snapshots[-1]
+        return_pct = ((latest.total_value - initial_capital) / initial_capital * Decimal(100)
+                      if initial_capital > 0 else Decimal(0))
+    else:
+        latest = None
+        return_pct = Decimal(0)
+
+    backtest_rows = [row for row in _read_backtest_report() if row["symbol"] == active_symbol]
+
+    return templates.TemplateResponse(request, "index.html", {
+        "symbols": symbols,
+        "active_symbol": active_symbol,
+        "latest": latest,
+        "return_pct": return_pct,
+        "backtest_rows": backtest_rows,
+    })
