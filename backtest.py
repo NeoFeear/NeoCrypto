@@ -173,7 +173,7 @@ def main() -> None:
     interval_ms = INTERVAL_MS[cfg.backtest.interval]
     periods_per_year = (365 * 24 * 3_600_000) // INTERVAL_MS[cfg.backtest.interval]
     now_ms = int(time.time() * 1000)
-    now_ms -= now_ms % interval_ms
+    now_ms = now_ms - (now_ms % interval_ms) - 1
 
     raw_rows: list[dict] = []
     analytics_rows: list[dict] = []
@@ -192,6 +192,11 @@ def main() -> None:
             logger.warning("Aucune bougie recuperee pour %s, symbole ignore.", symbol)
             continue
 
+        # Grid band derived from this symbol's own historical range over the full backtest
+        # window — a simplification with look-ahead bias (a live deployment would need to
+        # pick the band in advance, without seeing the whole window). Acceptable for this
+        # comparative/pedagogical backtest; would need a walk-forward or expanding-window
+        # approach to remove the bias for rigorous strategy evaluation.
         grid_params = dict(strategy_params["grid"])
         grid_params["lower_bound"] = min(k.low for k in klines)
         grid_params["upper_bound"] = max(k.high for k in klines)
