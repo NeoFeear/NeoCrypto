@@ -10,6 +10,7 @@ def test_load_config_parses_defaults(tmp_path: Path):
     sample.write_text(
         """
 data_source: binance
+db_path: crypto_sim.db
 watchlist:
   - BTCUSDT
   - ETHUSDT
@@ -49,6 +50,7 @@ strategy_defaults:
     cfg = load_config(sample)
 
     assert cfg.data_source == "binance"
+    assert cfg.db_path == "crypto_sim.db"
     assert cfg.watchlist == ["BTCUSDT", "ETHUSDT"]
     assert cfg.liquidity.min_quote_volume_24h == Decimal("50000000")
     assert cfg.liquidity.max_spread_bps == Decimal("10")

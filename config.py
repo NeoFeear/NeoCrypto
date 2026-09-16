@@ -40,6 +40,7 @@ class SnapshotsConfig:
 @dataclass(frozen=True)
 class Config:
     data_source: str
+    db_path: str
     watchlist: list[str]
     liquidity: LiquidityConfig
     backtest: BacktestConfig
@@ -53,6 +54,7 @@ def load_config(path: str | Path = "config.yaml") -> Config:
     raw = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
     return Config(
         data_source=raw["data_source"],
+        db_path=raw["db_path"],
         watchlist=list(raw["watchlist"]),
         liquidity=LiquidityConfig(
             min_quote_volume_24h=Decimal(str(raw["liquidity"]["min_quote_volume_24h"])),

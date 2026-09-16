@@ -1,4 +1,5 @@
 data_source: binance
+db_path: crypto_sim.db
 
 watchlist:
   - BTCUSDT

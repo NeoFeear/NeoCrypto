@@ -65,6 +65,7 @@ def _oscillating_klines(count: int) -> list[Kline]:
 def _fake_config() -> Config:
     return Config(
         data_source="binance",
+        db_path="crypto_sim.db",
         watchlist=["BTCUSDT"],
         liquidity=LiquidityConfig(
             min_quote_volume_24h=Decimal("50000000"), max_spread_bps=Decimal("10")
