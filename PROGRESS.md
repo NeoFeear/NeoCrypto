@@ -65,11 +65,91 @@ n'est appelable "une bougie à la fois" par un moteur live sans redesign.
   n'était pas testée (seulement un cas largement au-dessus) — 1
   correctif pour ajouter le test à la limite exacte.
 
+## Plan 3/6 — Moteur live ✅ terminé (2026-09-16)
+
+Le plan a été scindé en 6 sous-projets après la revue finale du Plan 2 :
+le moteur live avait besoin d'un redesign complet de la persistance
+d'état des stratégies, pas d'un simple ajout (voir note structurelle
+ci-dessus). Plan 3 = moteur live seul ; Discord passe en Plan 4,
+dashboard en Plan 5, déploiement en Plan 6.
+
+- [x] Task 1 — Schéma SQLite (`db/schema.sql`) + migration WAL (`db/migrate.py`)
+- [x] Task 2 — Repository DB (`db/repository.py`) : trades, lots (resync complet par symbole), snapshots, engine_state
+- [x] Task 3 — Refactor Buy & Hold en `BuyHoldState` + `step()` (comportement backtest préservé, régression testée)
+- [x] Task 4 — Refactor DCA : ordonnancement par timestamp, supprime le paramètre d'intervalle et son bug de division par zéro
+- [x] Task 5 — Grid : état live (`GridState`) + `step_grid_live()` (D2 poll-à-poll) (1 correctif : garde `just_filled` morte supprimée, structurellement inatteignable en mode point-à-point)
+- [x] Task 6 — `live_engine.py` : `run_cycle()` + `reconstruct_engine_from_db()` (1 correctif majeur : les compteurs internes `_next_trade_id`/`_next_lot_id` du moteur n'étaient pas réamorcés après un redémarrage — collision d'id silencieuse possible avec les lots pré-existants ; repro écrite et vérifiée par le reviewer avant correctif)
+- [x] Task 7 — Retry/backoff sur échec provider (`fetch_with_retry`, 1s puis 4s, 3 tentatives, callback d'échec critique unique, ne lève jamais)
+- [x] Task 8 — Boucle de polling (`run_polling_loop`) avec injection du retry/backoff
+- [x] Task 9 — Purge des snapshots (`housekeeping.aggregate_old_snapshots`, fenêtre 30j, agrégation horaire Decimal-exacte) (1 correctif : test ne discriminait pas Decimal de float dans la moyenne)
+- [x] Task 10 — `main()` CLI + config `live.active_symbol`/`live.active_strategy`
+- [x] Task 11 — Vérification complète de la suite (137/137)
+
+## Revue finale du Plan 3 (4 tours de correctifs, la plus longue chaîne de revue du projet)
+
+La revue globale a trouvé 2 problèmes critiques + 5 importants invisibles
+tâche par tâche, tous des angles morts d'intégration entre tâches :
+
+- **Critique : le moteur live ne pouvait recevoir aucune bougie en
+  production.** `run_cycle`/`fetch_with_retry` appelaient
+  `get_klines(symbol, interval, 0, 0, limit=1)` — vérifié empiriquement
+  contre le vrai endpoint Binance (la fenêtre (0,0) renvoie []) et Kraken
+  (renvoie [] dès que `end_ms==0`). Chaque test passait uniquement parce
+  que les providers factices ignorent start/end. `python live_engine.py`
+  aurait tourné indéfiniment sans jamais trader.
+- **Critique : un redémarrage remettait `realized_pnl_cumule` à zéro.**
+  `reconstruct_engine_from_db` reconstruisait cash + lots mais jamais
+  `engine.trades`, dont dépend le calcul du PnL réalisé cumulé — chaque
+  redémarrage cassait la continuité de l'historique permanent.
+- Important : un cycle n'était pas atomique (5+ commits séparés,
+  un crash entre deux pouvait rejouer un signal déjà traité).
+- Important : `fetch_with_retry` ne rattrapait que `httpx.HTTPError` ;
+  toute autre exception (ex. Kraken) plantait tout le process.
+- Important : `housekeeping.aggregate_old_snapshots` (Task 9) était du
+  code mort — personne ne l'appelait.
+- Important (différé, voir ruling ci-dessous) : la persistance des lots
+  est indexée par symbole seul, pas (symbole, stratégie) — bug latent de
+  perte de données dès qu'une deuxième stratégie tradera le même symbole.
+
+Tous corrigés en 4 tours de correctifs + re-revues, chacune utilisant du
+**test de mutation** (annuler le correctif dans une copie miroir,
+confirmer que son propre test échoue) plutôt que de faire confiance aux
+rapports. Deux régressions réelles introduites par les correctifs
+eux-mêmes ont été détectées et corrigées de cette façon avant le merge :
+le handler d'exception du Tour 1 ne faisait pas de rollback (rejouait un
+trade en double), et le rollback du Tour 2 ne réconciliait pas le moteur
+en mémoire avec la DB après un cycle échoué (PnL réalisé perdu après un
+crash mi-cycle). 137 → 146 tests au fil des 4 tours.
+
+## Décisions / rulings notables (Plan 3)
+
+- Erreur opérationnelle repérée et corrigée : le fichier de plan avait
+  été édité par erreur dans le repo principal au lieu de la copie du
+  worktree pendant la conception des Tasks 6/8/10 — corrigé par
+  cherry-pick du commit dans la branche `plan-3-live-engine`.
+- Task 6 : `Lot.trade_id_achat` ne peut pas être l'id interne du moteur
+  FIFO (compteur privé, pas l'id autoincrement réel de la table
+  `trades`) — un `trade_id_map` en mémoire (id moteur → id DB réel),
+  possédé par la boucle de polling, fait la traduction avant chaque
+  écriture.
+- Persistance des lots : resync complet par symbole à chaque cycle
+  (`replace_lots_for_symbol` : delete puis reinsert depuis
+  `engine.get_lots()`) plutôt qu'un diff incrémental, plus robuste face
+  aux SELL et aux cycles multi-BUY.
+- **I6 différé explicitement** (pas oublié) : la persistance des lots
+  n'est pas encore indexée par (symbole, stratégie), seulement par
+  symbole. Aucun bug actuel (une seule stratégie active à la fois via
+  `config.yaml`), mais **précondition à vérifier avant d'activer deux
+  stratégies concurrentes sur le même symbole** — sinon chaque cycle de
+  l'une supprimerait les lots ouverts de l'autre.
+
+Fusionné sur `master` en local le 2026-09-16 (146/146). Push vers
+`origin` retardé jusqu'à la fin des 6 plans, sur instruction explicite
+de Florian.
+
 ## À venir
 
-Plan 3/5 — Moteur live + Discord (`discord_notifier.py`/`test_notifier.py`
-codés et testés avec webhooks mockés ; les vraies notifications restent
-coupées jusqu'à ce que Florian remplisse `.env` avec les webhooks
-réels — déjà fait le 2026-09-16).
-Plan 4/5 — Dashboard FastAPI.
-Plan 5/5 — `setup.sh` + systemd + déploiement LXC CT303 sur Proxmox.
+Plan 4/6 — Discord (`discord_notifier.py`/`test_notifier.py`, webhooks
+réels déjà dans `.env` depuis le 2026-09-16, prêts à être branchés).
+Plan 5/6 — Dashboard FastAPI.
+Plan 6/6 — `setup.sh` + systemd + déploiement LXC CT303 sur Proxmox.

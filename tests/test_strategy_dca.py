@@ -1,7 +1,8 @@
+# tests/test_strategy_dca.py
 from decimal import Decimal
 
 from engine.fifo_engine import FifoEngine
-from engine.strategies.dca import run_dca
+from engine.strategies.dca import DcaState, dca_state_from_json, dca_state_to_json, run_dca, step
 from market_data.types import Kline
 
 
@@ -15,29 +16,22 @@ def _kline(open_time_ms: int, close: str) -> Kline:
 
 def test_dca_buys_every_frequency_hours_starting_at_index_zero():
     engine = FifoEngine(initial_cash=Decimal("1000"), fee_pct=Decimal("0.001"))
-    # 25 hourly candles (index 0..24) with frequency_hours=24, interval_hours=1
-    # -> buys trigger at index 0 and index 24 only.
+    # 25 hourly candles (index 0..24); frequency_hours=24 -> buys at index 0 and 24 only.
     klines = [_kline(i * 3_600_000, "100" if i != 24 else "125") for i in range(25)]
 
     snapshots = run_dca(
         klines, engine, "BTCUSDT",
         params={"amount_per_buy": 50, "frequency_hours": 24, "reference_price": "close"},
-        interval_ms=3_600_000,
     )
 
     assert len(engine.trades) == 2
     trade0, trade24 = engine.trades
-
-    # buy0: price=100, qty=50/100=0.5, gross=50, fee=0.05, total_cost=50.05
     assert trade0.price == Decimal("100")
     assert trade0.quantity == Decimal("0.5")
     assert trade0.total_cost == Decimal("50.05")
-
-    # buy24: price=125, qty=50/125=0.4, gross=50, fee=0.05, total_cost=50.05
     assert trade24.price == Decimal("125")
     assert trade24.quantity == Decimal("0.4")
     assert trade24.total_cost == Decimal("50.05")
-
     assert engine.cash_balance == Decimal("1000") - Decimal("50.05") - Decimal("50.05")
     assert len(snapshots) == 25
 
@@ -47,32 +41,53 @@ def test_dca_never_sells():
     klines = [_kline(0, "100"), _kline(3_600_000, "50")]
 
     run_dca(klines, engine, "BTCUSDT",
-            params={"amount_per_buy": 50, "frequency_hours": 24, "reference_price": "close"},
-            interval_ms=3_600_000)
+            params={"amount_per_buy": 50, "frequency_hours": 24, "reference_price": "close"})
 
     assert all(t.side.value == "BUY" for t in engine.trades)
 
 
 def test_dca_rejected_buy_is_logged_not_raised():
-    # cash runs out; later scheduled buys are silently rejected by the engine (spec: no leverage)
     engine = FifoEngine(initial_cash=Decimal("60"), fee_pct=Decimal("0.001"))
     klines = [_kline(i * 3_600_000, "100") for i in range(3)]
 
     run_dca(klines, engine, "BTCUSDT",
-            params={"amount_per_buy": 50, "frequency_hours": 1, "reference_price": "close"},
-            interval_ms=3_600_000)
+            params={"amount_per_buy": 50, "frequency_hours": 1, "reference_price": "close"})
 
-    # buy0: total_cost=50.05, cash=60-50.05=9.95 ; buy1,buy2: total_cost=50.05 > 9.95, rejected
     assert len(engine.trades) == 1
     assert engine.cash_balance == Decimal("9.95")
 
 
-def test_dca_frequency_shorter_than_interval_buys_every_candle_no_crash():
+def test_dca_sub_hourly_candles_no_longer_need_an_interval_parameter():
+    # This is the scenario that used to require interval_hours and could
+    # ZeroDivisionError for interval_hours < 1 (e.g. 5-minute candles).
+    # The timestamp-based design has no such parameter or failure mode.
     engine = FifoEngine(initial_cash=Decimal("10000"), fee_pct=Decimal("0.001"))
-    klines = [_kline(i * 14_400_000, "100") for i in range(3)]  # 4h candles
+    klines = [_kline(i * 14_400_000, "100") for i in range(3)]  # 4-hour candles
 
     run_dca(klines, engine, "BTCUSDT",
-            params={"amount_per_buy": 50, "frequency_hours": 1, "reference_price": "close"},
-            interval_ms=14_400_000)
+            params={"amount_per_buy": 50, "frequency_hours": 1, "reference_price": "close"})
 
-    assert len(engine.trades) == 3  # clamped to 1 -> buys every candle, no crash
+    assert len(engine.trades) == 3  # frequency (1h) < candle spacing (4h) -> buys every candle
+
+
+def test_step_schedules_by_timestamp_not_call_count():
+    engine = FifoEngine(initial_cash=Decimal("10000"), fee_pct=Decimal("0.001"))
+    state = DcaState()
+    params = {"amount_per_buy": 50, "frequency_hours": 24, "reference_price": "close"}
+
+    step(state, _kline(0, "100"), engine, "BTCUSDT", params)
+    step(state, _kline(3_600_000, "100"), engine, "BTCUSDT", params)  # +1h, too soon
+    step(state, _kline(86_400_000, "100"), engine, "BTCUSDT", params)  # +24h from last buy
+
+    assert len(engine.trades) == 2
+    assert state.last_buy_ms == 86_400_000
+
+
+def test_dca_state_json_round_trip():
+    restored = dca_state_from_json(dca_state_to_json(DcaState(last_buy_ms=12345)))
+    assert restored.last_buy_ms == 12345
+
+
+def test_dca_state_json_round_trip_never_bought():
+    restored = dca_state_from_json(dca_state_to_json(DcaState()))
+    assert restored.last_buy_ms is None

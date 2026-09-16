@@ -10,6 +10,7 @@ def test_load_config_parses_defaults(tmp_path: Path):
     sample.write_text(
         """
 data_source: binance
+db_path: crypto_sim.db
 watchlist:
   - BTCUSDT
   - ETHUSDT
@@ -25,6 +26,8 @@ fees:
 live:
   poll_interval_seconds: 300
   poll_kline_interval: 5m
+  active_symbol: BTCUSDT
+  active_strategy: dca
 snapshots:
   retention_detail_days: 30
 strategy_defaults:
@@ -47,6 +50,7 @@ strategy_defaults:
     cfg = load_config(sample)
 
     assert cfg.data_source == "binance"
+    assert cfg.db_path == "crypto_sim.db"
     assert cfg.watchlist == ["BTCUSDT", "ETHUSDT"]
     assert cfg.liquidity.min_quote_volume_24h == Decimal("50000000")
     assert cfg.liquidity.max_spread_bps == Decimal("10")
@@ -56,6 +60,8 @@ strategy_defaults:
     assert cfg.fees.default_fee_pct == Decimal("0.001")
     assert cfg.live.poll_interval_seconds == 300
     assert cfg.live.poll_kline_interval == "5m"
+    assert cfg.live.active_symbol == "BTCUSDT"
+    assert cfg.live.active_strategy == "dca"
     assert cfg.snapshots.retention_detail_days == 30
     assert cfg.strategy_defaults == {
         "buy_hold": {"invest_at": "start"},

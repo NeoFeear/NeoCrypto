@@ -28,6 +28,8 @@ class FeesConfig:
 class LiveConfig:
     poll_interval_seconds: int
     poll_kline_interval: str
+    active_symbol: str
+    active_strategy: str
 
 
 @dataclass(frozen=True)
@@ -38,6 +40,7 @@ class SnapshotsConfig:
 @dataclass(frozen=True)
 class Config:
     data_source: str
+    db_path: str
     watchlist: list[str]
     liquidity: LiquidityConfig
     backtest: BacktestConfig
@@ -51,6 +54,7 @@ def load_config(path: str | Path = "config.yaml") -> Config:
     raw = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
     return Config(
         data_source=raw["data_source"],
+        db_path=raw["db_path"],
         watchlist=list(raw["watchlist"]),
         liquidity=LiquidityConfig(
             min_quote_volume_24h=Decimal(str(raw["liquidity"]["min_quote_volume_24h"])),
@@ -65,6 +69,8 @@ def load_config(path: str | Path = "config.yaml") -> Config:
         live=LiveConfig(
             poll_interval_seconds=int(raw["live"]["poll_interval_seconds"]),
             poll_kline_interval=raw["live"]["poll_kline_interval"],
+            active_symbol=raw["live"]["active_symbol"],
+            active_strategy=raw["live"]["active_strategy"],
         ),
         snapshots=SnapshotsConfig(
             retention_detail_days=int(raw["snapshots"]["retention_detail_days"])

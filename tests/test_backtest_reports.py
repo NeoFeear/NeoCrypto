@@ -16,7 +16,7 @@ def _run_dca_scenario():
     engine, snapshots = run_strategy(
         "dca", klines, "BTCUSDT",
         params={"amount_per_buy": 50, "frequency_hours": 24, "reference_price": "close"},
-        initial_capital=Decimal("1000"), fee_pct=Decimal("0.001"), interval_ms=3_600_000,
+        initial_capital=Decimal("1000"), fee_pct=Decimal("0.001"),
     )
     return engine, snapshots
 
@@ -70,7 +70,7 @@ def test_build_analytics_row_buy_hold_self_comparison_is_zero_alpha():
     engine, snapshots = run_strategy(
         "buy_hold", [_kline(0, "100"), _kline(3_600_000, "110")], "BTCUSDT",
         params={"invest_at": "start"}, initial_capital=Decimal("1000"),
-        fee_pct=Decimal("0.001"), interval_ms=3_600_000,
+        fee_pct=Decimal("0.001"),
     )
     own_return = (snapshots[-1].total_value - Decimal("1000")) / Decimal("1000") * Decimal("100")
 
