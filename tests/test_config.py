@@ -32,6 +32,8 @@ snapshots:
   retention_detail_days: 30
 discord:
   alert_drawdown_threshold_pct: 10
+dashboard:
+  port: 8303
 strategy_defaults:
   buy_hold:
     invest_at: start
@@ -71,3 +73,4 @@ strategy_defaults:
         "grid": {"lower_bound": 25000, "upper_bound": 35000, "n_levels": 10, "spacing": "geometric", "order_size_quote": 100},
     }
     assert cfg.discord.alert_drawdown_threshold_pct == Decimal("10")
+    assert cfg.dashboard.port == 8303

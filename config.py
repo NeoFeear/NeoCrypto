@@ -43,6 +43,11 @@ class DiscordConfig:
 
 
 @dataclass(frozen=True)
+class DashboardConfig:
+    port: int
+
+
+@dataclass(frozen=True)
 class Config:
     data_source: str
     db_path: str
@@ -53,6 +58,7 @@ class Config:
     live: LiveConfig
     snapshots: SnapshotsConfig
     discord: DiscordConfig
+    dashboard: DashboardConfig
     strategy_defaults: dict
 
 
@@ -84,5 +90,6 @@ def load_config(path: str | Path = "config.yaml") -> Config:
         discord=DiscordConfig(
             alert_drawdown_threshold_pct=Decimal(str(raw["discord"]["alert_drawdown_threshold_pct"]))
         ),
+        dashboard=DashboardConfig(port=int(raw["dashboard"]["port"])),
         strategy_defaults=dict(raw["strategy_defaults"]),
     )
