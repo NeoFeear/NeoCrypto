@@ -1,6 +1,10 @@
 import logging
 import sqlite3
+import time
 from decimal import Decimal
+from typing import Callable
+
+import httpx
 
 from db.repository import get_engine_state, insert_snapshot, insert_trade, replace_lots_for_symbol, set_engine_state
 from engine.fifo_engine import FifoEngine, Lot
@@ -12,6 +16,7 @@ from engine.strategies.dca import step as dca_step
 from engine.strategies.grid import GridState, build_grid_state, grid_state_from_json, grid_state_to_json
 from engine.strategies.grid import step_grid_live
 from market_data.provider import MarketDataProvider
+from market_data.types import Kline
 
 logger = logging.getLogger(__name__)
 
@@ -150,3 +155,27 @@ def reconstruct_engine_from_db(
     engine._next_lot_id = (max_lot_id_row["max_id"] or 0) + 1
 
     return engine
+
+
+_RETRY_BACKOFF_SECONDS = [1, 4]
+
+
+def fetch_with_retry(
+    provider: MarketDataProvider, symbol: str, poll_interval: str,
+    on_critical_failure: Callable[[str], None],
+) -> list[Kline]:
+    """Spec section 5: 1 retry with exponential backoff (1s, then 4s); after 3
+    consecutive failures, calls on_critical_failure and returns [] rather than
+    raising -- a bad cycle must never crash the polling loop."""
+    attempts = 0
+    last_error: Exception | None = None
+    while attempts < 3:
+        try:
+            return provider.get_klines(symbol, poll_interval, 0, 0, limit=1)
+        except httpx.HTTPError as e:
+            last_error = e
+            attempts += 1
+            if attempts < 3:
+                time.sleep(_RETRY_BACKOFF_SECONDS[attempts - 1])
+    on_critical_failure(f"Echec API repete pour {symbol} apres 3 tentatives: {last_error}")
+    return []
