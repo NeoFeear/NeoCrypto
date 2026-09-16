@@ -38,6 +38,11 @@ class SnapshotsConfig:
 
 
 @dataclass(frozen=True)
+class DiscordConfig:
+    alert_drawdown_threshold_pct: Decimal
+
+
+@dataclass(frozen=True)
 class Config:
     data_source: str
     db_path: str
@@ -47,6 +52,7 @@ class Config:
     fees: FeesConfig
     live: LiveConfig
     snapshots: SnapshotsConfig
+    discord: DiscordConfig
     strategy_defaults: dict
 
 
@@ -74,6 +80,9 @@ def load_config(path: str | Path = "config.yaml") -> Config:
         ),
         snapshots=SnapshotsConfig(
             retention_detail_days=int(raw["snapshots"]["retention_detail_days"])
+        ),
+        discord=DiscordConfig(
+            alert_drawdown_threshold_pct=Decimal(str(raw["discord"]["alert_drawdown_threshold_pct"]))
         ),
         strategy_defaults=dict(raw["strategy_defaults"]),
     )

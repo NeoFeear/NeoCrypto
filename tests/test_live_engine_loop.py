@@ -79,6 +79,7 @@ def test_run_polling_loop_stops_after_max_cycles_and_processes_new_candles(conn,
         poll_interval="5m", poll_interval_seconds=300,
         on_critical_failure=lambda msg: None, initial_cash=Decimal("1000"), max_cycles=3,
         discord_webhooks=DiscordWebhooks(daily_summary="", transactions="", alerts="", logs=""),
+        drawdown_threshold_pct=Decimal("10"),
     )
 
     # buy_hold only ever buys once, on the first genuinely-new candle it sees
@@ -97,6 +98,7 @@ def test_run_polling_loop_sleeps_between_cycles(conn, monkeypatch):
         poll_interval="5m", poll_interval_seconds=300,
         on_critical_failure=lambda msg: None, initial_cash=Decimal("1000"), max_cycles=2,
         discord_webhooks=DiscordWebhooks(daily_summary="", transactions="", alerts="", logs=""),
+        drawdown_threshold_pct=Decimal("10"),
     )
 
     # No sleep after the final cycle (mirrors Plan 1's pagination convention of no
@@ -118,6 +120,7 @@ def test_run_polling_loop_requires_initial_cash_no_silent_gap(conn):
             poll_interval="5m", poll_interval_seconds=300,
             on_critical_failure=lambda msg: None, max_cycles=1,
             discord_webhooks=DiscordWebhooks(daily_summary="", transactions="", alerts="", logs=""),
+            drawdown_threshold_pct=Decimal("10"),
         )
 
 
@@ -132,6 +135,7 @@ def test_run_polling_loop_survives_unhandled_exception_and_continues_next_cycle(
         poll_interval="5m", poll_interval_seconds=300,
         on_critical_failure=failures.append, initial_cash=Decimal("1000"), max_cycles=2,
         discord_webhooks=DiscordWebhooks(daily_summary="", transactions="", alerts="", logs=""),
+        drawdown_threshold_pct=Decimal("10"),
     )
 
     # First cycle's unhandled RuntimeError must not propagate out of the loop.
@@ -180,6 +184,7 @@ def test_run_polling_loop_rolls_back_partial_cycle_so_signal_is_not_replayed(con
         poll_interval="5m", poll_interval_seconds=300,
         on_critical_failure=failures.append, initial_cash=Decimal("1000"), max_cycles=2,
         discord_webhooks=DiscordWebhooks(daily_summary="", transactions="", alerts="", logs=""),
+        drawdown_threshold_pct=Decimal("10"),
     )
 
     assert len(failures) == 1
@@ -219,6 +224,7 @@ def test_run_polling_loop_runs_daily_housekeeping_and_aggregates_old_snapshots(c
         on_critical_failure=lambda msg: None, initial_cash=Decimal("1000"),
         max_cycles=1, retention_days=30,
         discord_webhooks=DiscordWebhooks(daily_summary="", transactions="", alerts="", logs=""),
+        drawdown_threshold_pct=Decimal("10"),
     )
 
     eth_rows = conn.execute(
@@ -287,6 +293,7 @@ def test_run_polling_loop_reconciles_in_memory_engine_with_db_after_mid_sell_rol
         on_critical_failure=failures.append, max_cycles=4,
         initial_cash=Decimal("1000"),
         discord_webhooks=DiscordWebhooks(daily_summary="", transactions="", alerts="", logs=""),
+        drawdown_threshold_pct=Decimal("10"),
     )
 
     assert len(failures) == 1
@@ -324,7 +331,7 @@ def test_run_polling_loop_sends_discord_notification_for_each_committed_trade(co
         conn, provider, engine, "BTCUSDT", "buy_hold", {"invest_at": "start"},
         poll_interval="5m", poll_interval_seconds=300,
         on_critical_failure=lambda msg: None, initial_cash=Decimal("1000"),
-        max_cycles=1, discord_webhooks=webhooks,
+        max_cycles=1, discord_webhooks=webhooks, drawdown_threshold_pct=Decimal("10"),
     )
 
     assert len(sent) == 1
@@ -351,7 +358,32 @@ def test_run_polling_loop_sends_no_discord_notification_when_cycle_produces_no_t
         conn, provider, engine, "BTCUSDT", "dca", params,
         poll_interval="5m", poll_interval_seconds=300,
         on_critical_failure=lambda msg: None, initial_cash=Decimal("0"),
-        max_cycles=1, discord_webhooks=webhooks,
+        max_cycles=1, discord_webhooks=webhooks, drawdown_threshold_pct=Decimal("10"),
     )
 
     assert sent == []
+
+
+def test_run_polling_loop_sends_drawdown_alert_once_when_crossing_threshold(conn, monkeypatch):
+    monkeypatch.setattr("live_engine.time.sleep", lambda s: None)
+    alerts = []
+    monkeypatch.setattr(
+        "live_engine.send_alert",
+        lambda webhook_url, alert_type, message, severity: alerts.append((alert_type, severity)),
+    )
+    # Price crashes from 100 -> 85 (15% drop), well past a 10% threshold.
+    provider = SequenceProvider([_kline(0, "100"), _kline(300_000, "85"), _kline(600_000, "85")])
+    engine = FifoEngine(initial_cash=Decimal("1000"), fee_pct=Decimal("0.001"))
+    webhooks = DiscordWebhooks(daily_summary="", transactions="", alerts="https://webhook/alerts", logs="")
+
+    run_polling_loop(
+        conn, provider, engine, "BTCUSDT", "buy_hold", {"invest_at": "start"},
+        poll_interval="5m", poll_interval_seconds=300,
+        on_critical_failure=lambda msg: None, initial_cash=Decimal("1000"),
+        max_cycles=3, discord_webhooks=webhooks, drawdown_threshold_pct=Decimal("10"),
+    )
+
+    # Crosses the threshold once (cycle 2) and must not re-alert every
+    # subsequent cycle while still under it (cycle 3) -- anti-spam.
+    assert len(alerts) == 1
+    assert alerts[0] == ("drawdown", "warning")

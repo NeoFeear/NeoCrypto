@@ -9,7 +9,7 @@ import httpx
 from config import load_config
 from db.migrate import init_db
 from db.repository import get_engine_state, insert_snapshot, insert_trade, replace_lots_for_symbol, set_engine_state
-from discord_notifier import DiscordWebhooks, send_transaction
+from discord_notifier import DiscordWebhooks, send_alert, send_transaction
 from engine.fifo_engine import FifoEngine, Lot, Side, Trade
 from engine.strategies import base as strategy_base
 from engine.strategies.buy_hold import BuyHoldState, buy_hold_state_from_json, buy_hold_state_to_json
@@ -236,6 +236,31 @@ def fetch_with_retry(
     return []
 
 
+def _check_drawdown_alert(
+    conn: sqlite3.Connection, symbol: str, strategy_type: str, total_value: Decimal,
+    threshold_pct: Decimal, webhook_url: str,
+) -> None:
+    peak_key = f"portfolio_peak_value:{symbol}:{strategy_type}"
+    active_key = f"drawdown_alert_active:{symbol}:{strategy_type}"
+
+    peak_raw = get_engine_state(conn, peak_key)
+    peak = Decimal(peak_raw) if peak_raw is not None else total_value
+    if total_value > peak:
+        peak = total_value
+    set_engine_state(conn, peak_key, str(peak), commit=False)
+
+    if peak <= 0:
+        return
+    drawdown_pct = (peak - total_value) / peak * Decimal(100)
+    was_active = get_engine_state(conn, active_key) == "1"
+
+    if drawdown_pct > threshold_pct and not was_active:
+        send_alert(webhook_url, "drawdown", f"Drawdown de {drawdown_pct:.2f}% pour {symbol}", severity="warning")
+        set_engine_state(conn, active_key, "1", commit=False)
+    elif drawdown_pct <= threshold_pct and was_active:
+        set_engine_state(conn, active_key, "0", commit=False)
+
+
 def run_polling_loop(
     conn: sqlite3.Connection,
     provider: MarketDataProvider,
@@ -248,6 +273,7 @@ def run_polling_loop(
     on_critical_failure: Callable[[str], None],
     initial_cash: Decimal,
     discord_webhooks: DiscordWebhooks,
+    drawdown_threshold_pct: Decimal,
     max_cycles: int | None = None,
     retention_days: int | None = None,
 ) -> None:
@@ -264,6 +290,17 @@ def run_polling_loop(
             )
             for trade in committed_trades:
                 send_transaction(discord_webhooks.transactions, trade)
+
+            latest_snapshot = conn.execute(
+                "SELECT total_value FROM portfolio_snapshots WHERE symbol = ? ORDER BY id DESC LIMIT 1",
+                (symbol,),
+            ).fetchone()
+            if latest_snapshot is not None:
+                _check_drawdown_alert(
+                    conn, symbol, strategy_type, Decimal(latest_snapshot["total_value"]),
+                    drawdown_threshold_pct, discord_webhooks.alerts,
+                )
+                conn.commit()
 
             if retention_days is not None:
                 now_ms = int(time.time() * 1000)
@@ -337,9 +374,10 @@ def main() -> None:
             on_critical_failure=on_critical_failure,
             retention_days=cfg.snapshots.retention_detail_days,
             initial_cash=cfg.backtest.initial_capital,
-            # Placeholder until Task 7 wires in load_discord_webhooks() alongside
+            # Placeholder until Task 9 wires in load_discord_webhooks() alongside
             # the rest of main()'s Discord setup.
             discord_webhooks=DiscordWebhooks(daily_summary="", transactions="", alerts="", logs=""),
+            drawdown_threshold_pct=cfg.discord.alert_drawdown_threshold_pct,
         )
     except KeyboardInterrupt:
         logger.info("Arret demande (Ctrl+C).")

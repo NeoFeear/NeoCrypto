@@ -30,6 +30,8 @@ live:
   active_strategy: dca
 snapshots:
   retention_detail_days: 30
+discord:
+  alert_drawdown_threshold_pct: 10
 strategy_defaults:
   buy_hold:
     invest_at: start
@@ -68,3 +70,4 @@ strategy_defaults:
         "dca": {"amount_per_buy": 50, "frequency_hours": 24, "reference_price": "close"},
         "grid": {"lower_bound": 25000, "upper_bound": 35000, "n_levels": 10, "spacing": "geometric", "order_size_quote": 100},
     }
+    assert cfg.discord.alert_drawdown_threshold_pct == Decimal("10")

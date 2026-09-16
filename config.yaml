@@ -28,6 +28,9 @@ live:
 snapshots:
   retention_detail_days: 30
 
+discord:
+  alert_drawdown_threshold_pct: 10
+
 strategy_defaults:
   buy_hold:
     invest_at: start

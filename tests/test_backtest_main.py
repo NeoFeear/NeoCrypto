@@ -6,6 +6,7 @@ import backtest
 from config import (
     BacktestConfig,
     Config,
+    DiscordConfig,
     FeesConfig,
     LiquidityConfig,
     LiveConfig,
@@ -76,6 +77,7 @@ def _fake_config() -> Config:
         fees=FeesConfig(default_fee_pct=Decimal("0.001")),
         live=LiveConfig(poll_interval_seconds=300, poll_kline_interval="5m", active_symbol="BTCUSDT", active_strategy="dca"),
         snapshots=SnapshotsConfig(retention_detail_days=30),
+        discord=DiscordConfig(alert_drawdown_threshold_pct=Decimal("10")),
         strategy_defaults={
             "buy_hold": {"invest_at": "start"},
             "dca": {"amount_per_buy": 50, "frequency_hours": 24, "reference_price": "close"},
