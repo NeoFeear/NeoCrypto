@@ -100,11 +100,13 @@ def step_grid_live(
     (cheapest-first fill) apply identically to the backtest side. The first-ever
     call for a fresh state has no prior price to compare against, so it can only
     record the current price, never trigger — this is unavoidable with a
-    point-to-point crossing detector."""
+    point-to-point crossing detector. Unlike backtest's OHLC range, a single
+    poll-to-poll price comparison can only ever satisfy a downward (buy) OR
+    upward (sell) crossing in one call, never both, so no same-cycle round-trip
+    guard is needed here."""
     order_size_quote = Decimal(str(params["order_size_quote"]))
 
     if state.prev_price is not None:
-        just_filled = []
         buy_candidates = sorted(
             (lvl for lvl in state.levels if lvl.state == "EMPTY" and state.prev_price > lvl.buy_price >= current_price),
             key=lambda lvl: lvl.buy_price,
@@ -115,10 +117,9 @@ def step_grid_live(
             if trade is not None:
                 lvl.state = "FILLED"
                 lvl.filled_quantity = quantity
-                just_filled.append(lvl)
 
         for lvl in state.levels:
-            if lvl not in just_filled and lvl.state == "FILLED" and state.prev_price < lvl.sell_price <= current_price:
+            if lvl.state == "FILLED" and state.prev_price < lvl.sell_price <= current_price:
                 trade = engine.sell(timestamp, symbol, lvl.sell_price, lvl.filled_quantity, "grid")
                 if trade is not None:
                     lvl.state = "EMPTY"

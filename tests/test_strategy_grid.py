@@ -190,16 +190,21 @@ def test_step_grid_live_multi_level_fills_cheapest_first_rejects_rest():
     assert engine.cash_balance == Decimal("49.85")
 
 
-def test_step_grid_live_does_not_round_trip_within_same_poll():
+def test_step_grid_live_upward_tick_never_triggers_downward_buy():
+    # Verify that an upward price movement never triggers a downward-only buy condition,
+    # and that an EMPTY level cannot be sold. This tests the directionality of crossing
+    # detection, not a same-cycle round-trip guard (which is structurally impossible in
+    # poll-to-poll mode: a single price transition can only ever satisfy downward (buy)
+    # OR upward (sell), never both).
     engine = FifoEngine(initial_cash=Decimal("1000"), fee_pct=Decimal("0.001"))
     params = {"lower_bound": 100, "upper_bound": 200, "n_levels": 1,
               "spacing": "arithmetic", "order_size_quote": 100}
     state = build_grid_state(params)
 
     step_grid_live(state, Decimal("150"), 0, engine, "BTCUSDT", params)   # sets prev=150
-    step_grid_live(state, Decimal("250"), 1, engine, "BTCUSDT", params)   # crosses buy(100)? no. crosses sell(200)? level is EMPTY, no sell possible.
+    step_grid_live(state, Decimal("250"), 1, engine, "BTCUSDT", params)   # upward jump: 150->250
 
-    # Neither buy nor sell should fire: price never touched buy_price=100 in this jump (150->250, upward)
+    # No buy (upward jump doesn't cross downward-only buy=100) and no sell (level is EMPTY)
     assert engine.trades == []
 
 
