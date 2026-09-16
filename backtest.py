@@ -4,6 +4,8 @@ import time
 from decimal import Decimal
 from pathlib import Path
 
+import httpx
+
 from market_data.pagination import fetch_klines_paginated
 from market_data.provider import INTERVAL_MS, MarketDataProvider
 from market_data.types import Kline
@@ -30,8 +32,12 @@ def select_backtest_symbols(
     passing: list[str] = []
     excluded: list[tuple[str, str]] = []
     for symbol in watchlist:
-        ticker = provider.get_ticker_24h(symbol)
-        book = provider.get_book_ticker(symbol)
+        try:
+            ticker = provider.get_ticker_24h(symbol)
+            book = provider.get_book_ticker(symbol)
+        except httpx.HTTPError as e:
+            excluded.append((symbol, f"erreur API: {e}"))
+            continue
         ok, reason = passes_liquidity_filter(ticker, book, liquidity_cfg)
         if ok:
             passing.append(symbol)
@@ -64,13 +70,13 @@ def run_strategy(
     params: dict,
     initial_capital: Decimal,
     fee_pct: Decimal,
-    interval_hours: int,
+    interval_ms: int,
 ) -> tuple[FifoEngine, list[PortfolioSnapshot]]:
     engine = FifoEngine(initial_cash=initial_capital, fee_pct=fee_pct)
     if strategy_type == "buy_hold":
         snapshots = run_buy_hold(klines, engine, symbol, params)
     elif strategy_type == "dca":
-        snapshots = run_dca(klines, engine, symbol, params, interval_hours)
+        snapshots = run_dca(klines, engine, symbol, params, interval_ms)
     elif strategy_type == "grid":
         snapshots = run_grid(klines, engine, symbol, params)
     else:
@@ -80,7 +86,7 @@ def run_strategy(
 
 def build_raw_metrics_row(
     symbol: str, strategy_type: str, engine: FifoEngine, snapshots: list[PortfolioSnapshot],
-    initial_capital: Decimal,
+    initial_capital: Decimal, buy_hold_return_pct: Decimal,
 ) -> dict:
     final_value = snapshots[-1].total_value if snapshots else initial_capital
     stats = analytics.trade_stats(engine.trades)
@@ -89,19 +95,21 @@ def build_raw_metrics_row(
     losses = [p for p in sells if p < 0]
     max_dd, _ = analytics.max_drawdown(snapshots)
     total_fees = sum((t.fee_amount for t in engine.trades), Decimal("0"))
+    row_return_pct = analytics.total_return_pct(initial_capital, final_value)
 
     return {
         "symbol": symbol,
         "strategy": strategy_type,
-        "return_pct": analytics.total_return_pct(initial_capital, final_value),
+        "return_pct": row_return_pct,
         "nb_trades": len(engine.trades),
         "win_rate_pct": stats["win_rate"] * Decimal(100),
         "avg_win": stats["avg_win"],
-        "avg_loss": stats["avg_loss"],
+        "avg_loss": -stats["avg_loss"],
         "biggest_win": max(wins) if wins else Decimal("0"),
         "biggest_loss": min(losses) if losses else Decimal("0"),
         "max_drawdown_pct": max_dd,
         "total_fees": total_fees,
+        "alpha_vs_buy_hold_pct": analytics.alpha_vs_buy_hold(row_return_pct, buy_hold_return_pct),
     }
 
 
@@ -153,6 +161,8 @@ def print_console_table(rows: list[dict]) -> None:
 
 
 def main() -> None:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+
     cfg = load_config()
     provider = build_provider(cfg.data_source)
 
@@ -160,9 +170,10 @@ def main() -> None:
     for symbol, reason in excluded:
         logger.warning("Symbole exclu du backtest: %s (%s)", symbol, reason)
 
-    interval_hours = INTERVAL_MS[cfg.backtest.interval] // 3_600_000
+    interval_ms = INTERVAL_MS[cfg.backtest.interval]
     periods_per_year = (365 * 24 * 3_600_000) // INTERVAL_MS[cfg.backtest.interval]
     now_ms = int(time.time() * 1000)
+    now_ms -= now_ms % interval_ms
 
     raw_rows: list[dict] = []
     analytics_rows: list[dict] = []
@@ -170,16 +181,24 @@ def main() -> None:
     strategy_params = cfg.strategy_defaults
 
     for symbol in passing:
-        klines = download_backtest_klines(
-            provider, symbol, cfg.backtest.interval, cfg.backtest.lookback_days, now_ms
-        )
+        try:
+            klines = download_backtest_klines(
+                provider, symbol, cfg.backtest.interval, cfg.backtest.lookback_days, now_ms
+            )
+        except httpx.HTTPError as e:
+            logger.warning("Erreur de telechargement pour %s: %s, symbole ignore.", symbol, e)
+            continue
         if not klines:
             logger.warning("Aucune bougie recuperee pour %s, symbole ignore.", symbol)
             continue
 
+        grid_params = dict(strategy_params["grid"])
+        grid_params["lower_bound"] = min(k.low for k in klines)
+        grid_params["upper_bound"] = max(k.high for k in klines)
+
         buy_hold_engine, buy_hold_snapshots = run_strategy(
             "buy_hold", klines, symbol, strategy_params["buy_hold"],
-            cfg.backtest.initial_capital, cfg.fees.default_fee_pct, interval_hours,
+            cfg.backtest.initial_capital, cfg.fees.default_fee_pct, interval_ms,
         )
         buy_hold_return = analytics.total_return_pct(
             cfg.backtest.initial_capital, buy_hold_snapshots[-1].total_value
@@ -189,13 +208,19 @@ def main() -> None:
             if strategy_type == "buy_hold":
                 engine, snapshots = buy_hold_engine, buy_hold_snapshots
             else:
+                params = grid_params if strategy_type == "grid" else strategy_params[strategy_type]
                 engine, snapshots = run_strategy(
-                    strategy_type, klines, symbol, strategy_params[strategy_type],
-                    cfg.backtest.initial_capital, cfg.fees.default_fee_pct, interval_hours,
+                    strategy_type, klines, symbol, params,
+                    cfg.backtest.initial_capital, cfg.fees.default_fee_pct, interval_ms,
                 )
 
+            if len(engine.trades) == 0:
+                logger.warning("Strategie %s sur %s n'a produit aucun trade.", strategy_type, symbol)
+
             raw_rows.append(
-                build_raw_metrics_row(symbol, strategy_type, engine, snapshots, cfg.backtest.initial_capital)
+                build_raw_metrics_row(
+                    symbol, strategy_type, engine, snapshots, cfg.backtest.initial_capital, buy_hold_return,
+                )
             )
             analytics_rows.append(
                 build_analytics_row(

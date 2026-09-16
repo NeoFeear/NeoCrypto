@@ -7,14 +7,14 @@ from models import PortfolioSnapshot
 
 
 def run_dca(
-    klines: list[Kline], engine: FifoEngine, symbol: str, params: dict, interval_hours: int
+    klines: list[Kline], engine: FifoEngine, symbol: str, params: dict, interval_ms: int
 ) -> list[PortfolioSnapshot]:
     """Spec section 3: buy amount_per_buy (quote) every frequency_hours, starting
     immediately at the first candle. reference_price is always "close" (the
     only value the spec's schema defines)."""
     amount_per_buy = Decimal(str(params["amount_per_buy"]))
     frequency_hours = int(params["frequency_hours"])
-    candles_per_buy = max(1, frequency_hours // interval_hours)
+    candles_per_buy = max(1, (frequency_hours * 3_600_000) // interval_ms)
 
     snapshots: list[PortfolioSnapshot] = []
     for i, k in enumerate(klines):

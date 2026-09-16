@@ -18,7 +18,7 @@ def test_run_strategy_buy_hold_produces_fresh_engine_and_snapshots():
 
     engine, snapshots = run_strategy(
         "buy_hold", klines, "BTCUSDT", params={"invest_at": "start"},
-        initial_capital=Decimal("1000"), fee_pct=Decimal("0.001"), interval_hours=1,
+        initial_capital=Decimal("1000"), fee_pct=Decimal("0.001"), interval_ms=3_600_000,
     )
 
     assert engine.cash_balance == Decimal("0E-24")
@@ -32,10 +32,10 @@ def test_run_strategy_dca_uses_interval_hours():
     engine, snapshots = run_strategy(
         "dca", klines, "BTCUSDT",
         params={"amount_per_buy": 50, "frequency_hours": 1, "reference_price": "close"},
-        initial_capital=Decimal("1000"), fee_pct=Decimal("0.001"), interval_hours=1,
+        initial_capital=Decimal("1000"), fee_pct=Decimal("0.001"), interval_ms=3_600_000,
     )
 
-    assert len(engine.trades) == 3  # frequency_hours=1, interval_hours=1 -> every candle
+    assert len(engine.trades) == 3  # frequency_hours=1, interval_ms=3_600_000 -> every candle
 
 
 def test_run_strategy_grid_ignores_interval_hours():
@@ -45,7 +45,7 @@ def test_run_strategy_grid_ignores_interval_hours():
         "grid", klines, "BTCUSDT",
         params={"lower_bound": 100, "upper_bound": 200, "n_levels": 1,
                 "spacing": "arithmetic", "order_size_quote": 100},
-        initial_capital=Decimal("1000"), fee_pct=Decimal("0.001"), interval_hours=1,
+        initial_capital=Decimal("1000"), fee_pct=Decimal("0.001"), interval_ms=3_600_000,
     )
 
     assert engine.trades == []  # price 150 never touches buy=100 or sell=200 on a flat OHLC kline
@@ -53,4 +53,4 @@ def test_run_strategy_grid_ignores_interval_hours():
 
 def test_run_strategy_unknown_type_raises():
     with pytest.raises(ValueError, match="martingale"):
-        run_strategy("martingale", [], "BTCUSDT", {}, Decimal("1000"), Decimal("0.001"), 1)
+        run_strategy("martingale", [], "BTCUSDT", {}, Decimal("1000"), Decimal("0.001"), 3_600_000)

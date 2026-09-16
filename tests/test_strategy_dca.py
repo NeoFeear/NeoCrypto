@@ -22,7 +22,7 @@ def test_dca_buys_every_frequency_hours_starting_at_index_zero():
     snapshots = run_dca(
         klines, engine, "BTCUSDT",
         params={"amount_per_buy": 50, "frequency_hours": 24, "reference_price": "close"},
-        interval_hours=1,
+        interval_ms=3_600_000,
     )
 
     assert len(engine.trades) == 2
@@ -48,7 +48,7 @@ def test_dca_never_sells():
 
     run_dca(klines, engine, "BTCUSDT",
             params={"amount_per_buy": 50, "frequency_hours": 24, "reference_price": "close"},
-            interval_hours=1)
+            interval_ms=3_600_000)
 
     assert all(t.side.value == "BUY" for t in engine.trades)
 
@@ -60,7 +60,7 @@ def test_dca_rejected_buy_is_logged_not_raised():
 
     run_dca(klines, engine, "BTCUSDT",
             params={"amount_per_buy": 50, "frequency_hours": 1, "reference_price": "close"},
-            interval_hours=1)
+            interval_ms=3_600_000)
 
     # buy0: total_cost=50.05, cash=60-50.05=9.95 ; buy1,buy2: total_cost=50.05 > 9.95, rejected
     assert len(engine.trades) == 1
@@ -73,6 +73,6 @@ def test_dca_frequency_shorter_than_interval_buys_every_candle_no_crash():
 
     run_dca(klines, engine, "BTCUSDT",
             params={"amount_per_buy": 50, "frequency_hours": 1, "reference_price": "close"},
-            interval_hours=4)
+            interval_ms=14_400_000)
 
     assert len(engine.trades) == 3  # clamped to 1 -> buys every candle, no crash

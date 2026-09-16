@@ -1,5 +1,7 @@
 from decimal import Decimal
 
+import httpx
+
 from backtest import download_backtest_klines, select_backtest_symbols
 from config import LiquidityConfig
 from market_data.provider import MarketDataProvider
@@ -54,6 +56,34 @@ def test_select_backtest_symbols_partitions_pass_and_fail():
 
     assert passing == ["BTCUSDT"]
     assert excluded == [("ETHUSDT", "volume insuffisant"), ("SOLUSDT", "spread trop large")]
+
+
+def test_select_backtest_symbols_excludes_symbol_on_http_error_but_processes_others():
+    class RaisingOnFirstProvider(FakeProvider):
+        def get_ticker_24h(self, symbol):
+            if symbol == "ETHUSDT":
+                raise httpx.HTTPError("boom")
+            return super().get_ticker_24h(symbol)
+
+    provider = RaisingOnFirstProvider(
+        tickers={
+            "BTCUSDT": Ticker24h(symbol="BTCUSDT", quote_volume=Decimal("60000000")),
+            "SOLUSDT": Ticker24h(symbol="SOLUSDT", quote_volume=Decimal("60000000")),
+        },
+        books={
+            "BTCUSDT": BookTicker(symbol="BTCUSDT", bid_price=Decimal("100"), ask_price=Decimal("100.05")),
+            "SOLUSDT": BookTicker(symbol="SOLUSDT", bid_price=Decimal("100"), ask_price=Decimal("100.05")),
+        },
+    )
+
+    passing, excluded = select_backtest_symbols(
+        provider, ["BTCUSDT", "ETHUSDT", "SOLUSDT"], _liquidity_config()
+    )
+
+    assert passing == ["BTCUSDT", "SOLUSDT"]
+    assert len(excluded) == 1
+    assert excluded[0][0] == "ETHUSDT"
+    assert "erreur API" in excluded[0][1]
 
 
 def test_download_backtest_klines_computes_start_end_from_lookback_days():
