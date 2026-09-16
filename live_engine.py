@@ -239,9 +239,9 @@ def run_polling_loop(
     poll_interval: str,
     poll_interval_seconds: int,
     on_critical_failure: Callable[[str], None],
+    initial_cash: Decimal,
     max_cycles: int | None = None,
     retention_days: int | None = None,
-    initial_cash: Decimal | None = None,
 ) -> None:
     # Owned here, for the lifetime of this process: see Task 6's interface notes
     # on why trade_id_map is never persisted to the DB.
@@ -269,31 +269,29 @@ def run_polling_loop(
             # NEXT conn.commit() happens to be, defeating run_cycle's atomicity
             # guarantee and letting a signal be replayed after a partial failure.
             conn.rollback()
-            if initial_cash is not None:
-                # conn.rollback() only undoes the DB side. run_cycle mutates
-                # `engine` in memory (trades/lots/cash_balance) BEFORE persisting
-                # anything, and nothing undoes that -- so without this, a
-                # rolled-back trade stays "real" in the in-process engine for the
-                # rest of the run. Since build_snapshot() reads off this same
-                # in-memory engine, that phantom trade's PnL would leak into a
-                # LATER, successful cycle's durable snapshot even though the
-                # trades table never durably recorded it -- the exact C2 symptom
-                # (durable history disagreeing with a fresh reconstruction),
-                # reintroduced through this narrower window. Treat a rolled-back
-                # cycle like a mini-restart and re-derive engine from the DB, the
-                # same known-good mechanism C2/Task 6 already established.
-                # Guarded on initial_cash being provided (opt-in) so existing
-                # callers that don't pass it keep their prior, unaffected
-                # behavior rather than reconstructing with an unknown starting
-                # cash balance.
-                engine = reconstruct_engine_from_db(conn, symbol, initial_cash, engine.fee_pct)
-                # Any entries pointed at engine-internal trade ids from the now-
-                # discarded engine object; the reconstructed engine's own
-                # _next_trade_id/_next_lot_id counters are freshly reseeded past
-                # MAX(id) by reconstruct_engine_from_db itself, so no future
-                # lookup could ever hit a stale entry anyway -- cleared regardless
-                # for clarity.
-                trade_id_map.clear()
+            # conn.rollback() only undoes the DB side. run_cycle mutates `engine`
+            # in memory (trades/lots/cash_balance) BEFORE persisting anything, and
+            # nothing undoes that -- so without this, a rolled-back trade stays
+            # "real" in the in-process engine for the rest of the run. Since
+            # build_snapshot() reads off this same in-memory engine, that phantom
+            # trade's PnL would leak into a LATER, successful cycle's durable
+            # snapshot even though the trades table never durably recorded it --
+            # the exact C2 symptom (durable history disagreeing with a fresh
+            # reconstruction), reintroduced through this narrower window. Treat a
+            # rolled-back cycle like a mini-restart and re-derive engine from the
+            # DB, the same known-good mechanism C2/Task 6 already established.
+            # Unconditional (initial_cash is required, not optional): an opt-in
+            # guard here would silently drop this protection for any future
+            # caller that forgot to pass it -- exactly the class of silent gap
+            # this whole fix wave exists to close.
+            engine = reconstruct_engine_from_db(conn, symbol, initial_cash, engine.fee_pct)
+            # Any entries pointed at engine-internal trade ids from the now-
+            # discarded engine object; the reconstructed engine's own
+            # _next_trade_id/_next_lot_id counters are freshly reseeded past
+            # MAX(id) by reconstruct_engine_from_db itself, so no future lookup
+            # could ever hit a stale entry anyway -- cleared regardless for
+            # clarity.
+            trade_id_map.clear()
             on_critical_failure(f"Exception non geree pendant le cycle pour {symbol}: {e}")
 
         cycles += 1

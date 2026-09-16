@@ -76,7 +76,7 @@ def test_run_polling_loop_stops_after_max_cycles_and_processes_new_candles(conn,
     run_polling_loop(
         conn, provider, engine, "BTCUSDT", "buy_hold", params,
         poll_interval="5m", poll_interval_seconds=300,
-        on_critical_failure=lambda msg: None, max_cycles=3,
+        on_critical_failure=lambda msg: None, initial_cash=Decimal("1000"), max_cycles=3,
     )
 
     # buy_hold only ever buys once, on the first genuinely-new candle it sees
@@ -93,13 +93,28 @@ def test_run_polling_loop_sleeps_between_cycles(conn, monkeypatch):
     run_polling_loop(
         conn, provider, engine, "BTCUSDT", "buy_hold", {"invest_at": "start"},
         poll_interval="5m", poll_interval_seconds=300,
-        on_critical_failure=lambda msg: None, max_cycles=2,
+        on_critical_failure=lambda msg: None, initial_cash=Decimal("1000"), max_cycles=2,
     )
 
     # No sleep after the final cycle (mirrors Plan 1's pagination convention of no
     # trailing sleep once there's nothing left to do) -- with max_cycles=2 that's
     # exactly 1 sleep, between cycle 1 and cycle 2.
     assert sleeps == [300]
+
+
+def test_run_polling_loop_requires_initial_cash_no_silent_gap(conn):
+    # initial_cash is required (no default), not opt-in: a caller that omits it
+    # now gets an immediate, loud TypeError instead of silently losing NEW-4's
+    # engine/DB reconciliation on a rolled-back cycle.
+    provider = SequenceProvider([_kline(0, "100")])
+    engine = FifoEngine(initial_cash=Decimal("1000"), fee_pct=Decimal("0.001"))
+
+    with pytest.raises(TypeError):
+        run_polling_loop(
+            conn, provider, engine, "BTCUSDT", "buy_hold", {"invest_at": "start"},
+            poll_interval="5m", poll_interval_seconds=300,
+            on_critical_failure=lambda msg: None, max_cycles=1,
+        )
 
 
 def test_run_polling_loop_survives_unhandled_exception_and_continues_next_cycle(conn, monkeypatch):
@@ -111,13 +126,19 @@ def test_run_polling_loop_survives_unhandled_exception_and_continues_next_cycle(
     run_polling_loop(
         conn, provider, engine, "BTCUSDT", "buy_hold", {"invest_at": "start"},
         poll_interval="5m", poll_interval_seconds=300,
-        on_critical_failure=failures.append, max_cycles=2,
+        on_critical_failure=failures.append, initial_cash=Decimal("1000"), max_cycles=2,
     )
 
     # First cycle's unhandled RuntimeError must not propagate out of the loop.
     assert len(failures) == 1
-    # Second cycle's kline is still processed normally.
-    assert len(engine.trades) == 1
+    # Second cycle's kline is still processed normally. Checked against the DB,
+    # not the `engine` object this test passed in: NEW-4's fix reassigns
+    # run_polling_loop's own local `engine` name on a rolled-back cycle (here,
+    # cycle 1's failure, even though nothing had mutated yet), which does NOT
+    # update this test's own reference -- so asserting against `engine` here
+    # would be checking a stale object, not what actually happened.
+    trades_in_db = conn.execute("SELECT * FROM trades WHERE symbol = 'BTCUSDT'").fetchall()
+    assert len(trades_in_db) == 1
     assert len(conn.execute("SELECT * FROM portfolio_snapshots").fetchall()) == 1
 
 
@@ -152,7 +173,7 @@ def test_run_polling_loop_rolls_back_partial_cycle_so_signal_is_not_replayed(con
     run_polling_loop(
         conn, provider, engine, "BTCUSDT", "buy_hold", {"invest_at": "start"},
         poll_interval="5m", poll_interval_seconds=300,
-        on_critical_failure=failures.append, max_cycles=2,
+        on_critical_failure=failures.append, initial_cash=Decimal("1000"), max_cycles=2,
     )
 
     assert len(failures) == 1
@@ -189,7 +210,8 @@ def test_run_polling_loop_runs_daily_housekeeping_and_aggregates_old_snapshots(c
     run_polling_loop(
         conn, provider, engine, "BTCUSDT", "buy_hold", {"invest_at": "start"},
         poll_interval="5m", poll_interval_seconds=300,
-        on_critical_failure=lambda msg: None, max_cycles=1, retention_days=30,
+        on_critical_failure=lambda msg: None, initial_cash=Decimal("1000"),
+        max_cycles=1, retention_days=30,
     )
 
     eth_rows = conn.execute(
