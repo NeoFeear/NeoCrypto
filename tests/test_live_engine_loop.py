@@ -387,3 +387,59 @@ def test_run_polling_loop_sends_drawdown_alert_once_when_crossing_threshold(conn
     # subsequent cycle while still under it (cycle 3) -- anti-spam.
     assert len(alerts) == 1
     assert alerts[0] == ("drawdown", "warning")
+
+
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+
+def test_run_polling_loop_sends_daily_summary_once_past_8h_paris_then_edits_on_next_cycle(conn, monkeypatch):
+    monkeypatch.setattr("live_engine.time.sleep", lambda s: None)
+    # 2026-01-15 09:00 Europe/Paris (past the 8h threshold), in ms since epoch.
+    now_paris = datetime(2026, 1, 15, 9, 0, tzinfo=ZoneInfo("Europe/Paris"))
+    now_ms = int(now_paris.timestamp() * 1000)
+    monkeypatch.setattr("live_engine.time.time", lambda: now_ms / 1000)
+
+    calls = []
+
+    def fake_send_daily_summary(webhook_url, **kwargs):
+        calls.append(kwargs["existing_message_id"])
+        return "999"
+
+    monkeypatch.setattr("live_engine.send_daily_summary", fake_send_daily_summary)
+    provider = SequenceProvider([_kline(0, "100"), _kline(300_000, "100")])
+    engine = FifoEngine(initial_cash=Decimal("1000"), fee_pct=Decimal("0.001"))
+    webhooks = DiscordWebhooks(daily_summary="https://webhook/summary", transactions="", alerts="", logs="")
+
+    run_polling_loop(
+        conn, provider, engine, "BTCUSDT", "buy_hold", {"invest_at": "start"},
+        poll_interval="5m", poll_interval_seconds=300,
+        on_critical_failure=lambda msg: None, initial_cash=Decimal("1000"),
+        max_cycles=2, discord_webhooks=webhooks, drawdown_threshold_pct=Decimal("10"),
+    )
+
+    # First cycle: no message yet for today -> POST (existing_message_id=None).
+    # Second cycle: a message id is now stored for today -> PATCH (existing_message_id="999").
+    assert calls == [None, "999"]
+
+
+def test_run_polling_loop_sends_no_daily_summary_before_8h_paris(conn, monkeypatch):
+    monkeypatch.setattr("live_engine.time.sleep", lambda s: None)
+    now_paris = datetime(2026, 1, 15, 7, 0, tzinfo=ZoneInfo("Europe/Paris"))
+    now_ms = int(now_paris.timestamp() * 1000)
+    monkeypatch.setattr("live_engine.time.time", lambda: now_ms / 1000)
+
+    calls = []
+    monkeypatch.setattr("live_engine.send_daily_summary", lambda webhook_url, **kwargs: calls.append(1) or "999")
+    provider = SequenceProvider([_kline(0, "100")])
+    engine = FifoEngine(initial_cash=Decimal("1000"), fee_pct=Decimal("0.001"))
+    webhooks = DiscordWebhooks(daily_summary="https://webhook/summary", transactions="", alerts="", logs="")
+
+    run_polling_loop(
+        conn, provider, engine, "BTCUSDT", "buy_hold", {"invest_at": "start"},
+        poll_interval="5m", poll_interval_seconds=300,
+        on_critical_failure=lambda msg: None, initial_cash=Decimal("1000"),
+        max_cycles=1, discord_webhooks=webhooks, drawdown_threshold_pct=Decimal("10"),
+    )
+
+    assert calls == []

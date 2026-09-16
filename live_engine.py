@@ -1,15 +1,17 @@
 import logging
 import sqlite3
 import time
+from datetime import datetime
 from decimal import Decimal
 from typing import Callable
+from zoneinfo import ZoneInfo
 
 import httpx
 
 from config import load_config
 from db.migrate import init_db
 from db.repository import get_engine_state, insert_snapshot, insert_trade, replace_lots_for_symbol, set_engine_state
-from discord_notifier import DiscordWebhooks, send_alert, send_transaction
+from discord_notifier import DiscordWebhooks, send_alert, send_daily_summary, send_transaction
 from engine.fifo_engine import FifoEngine, Lot, Side, Trade
 from engine.strategies import base as strategy_base
 from engine.strategies.buy_hold import BuyHoldState, buy_hold_state_from_json, buy_hold_state_to_json
@@ -261,6 +263,45 @@ def _check_drawdown_alert(
         set_engine_state(conn, active_key, "0", commit=False)
 
 
+_PARIS_TZ = ZoneInfo("Europe/Paris")
+_DAILY_SUMMARY_HOUR = 8
+
+
+def _check_daily_summary(
+    conn: sqlite3.Connection, symbol: str, strategy_type: str, webhook_url: str,
+    now_ms: int, initial_cash: Decimal,
+) -> None:
+    now_paris = datetime.fromtimestamp(now_ms / 1000, tz=_PARIS_TZ)
+    if now_paris.hour < _DAILY_SUMMARY_HOUR:
+        return
+    today_str = now_paris.date().isoformat()
+
+    date_key = f"discord_daily_summary_date:{symbol}:{strategy_type}"
+    message_id_key = f"discord_daily_summary_message_id:{symbol}:{strategy_type}"
+
+    sent_date = get_engine_state(conn, date_key)
+    existing_message_id = get_engine_state(conn, message_id_key) if sent_date == today_str else None
+
+    latest_snapshot = conn.execute(
+        "SELECT * FROM portfolio_snapshots WHERE symbol = ? ORDER BY id DESC LIMIT 1", (symbol,)
+    ).fetchone()
+    if latest_snapshot is None:
+        return
+
+    total_value = Decimal(latest_snapshot["total_value"])
+    realized_pnl_cumule = Decimal(latest_snapshot["realized_pnl_cumule"])
+    unrealized_pnl = Decimal(latest_snapshot["unrealized_pnl"])
+    return_pct = ((total_value - initial_cash) / initial_cash * Decimal(100)) if initial_cash > 0 else Decimal(0)
+
+    new_message_id = send_daily_summary(
+        webhook_url, symbol=symbol, total_value=total_value, realized_pnl_cumule=realized_pnl_cumule,
+        unrealized_pnl=unrealized_pnl, return_pct=return_pct, existing_message_id=existing_message_id,
+    )
+    if new_message_id is not None:
+        set_engine_state(conn, date_key, today_str, commit=False)
+        set_engine_state(conn, message_id_key, new_message_id, commit=False)
+
+
 def run_polling_loop(
     conn: sqlite3.Connection,
     provider: MarketDataProvider,
@@ -299,6 +340,10 @@ def run_polling_loop(
                 _check_drawdown_alert(
                     conn, symbol, strategy_type, Decimal(latest_snapshot["total_value"]),
                     drawdown_threshold_pct, discord_webhooks.alerts,
+                )
+                _check_daily_summary(
+                    conn, symbol, strategy_type, discord_webhooks.daily_summary,
+                    int(time.time() * 1000), initial_cash,
                 )
                 conn.commit()
 
