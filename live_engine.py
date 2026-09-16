@@ -9,7 +9,7 @@ import httpx
 from config import load_config
 from db.migrate import init_db
 from db.repository import get_engine_state, insert_snapshot, insert_trade, replace_lots_for_symbol, set_engine_state
-from engine.fifo_engine import FifoEngine, Lot
+from engine.fifo_engine import FifoEngine, Lot, Side, Trade
 from engine.strategies import base as strategy_base
 from engine.strategies.buy_hold import BuyHoldState, buy_hold_state_from_json, buy_hold_state_to_json
 from engine.strategies.buy_hold import step as buy_hold_step
@@ -17,8 +17,9 @@ from engine.strategies.dca import DcaState, dca_state_from_json, dca_state_to_js
 from engine.strategies.dca import step as dca_step
 from engine.strategies.grid import GridState, build_grid_state, grid_state_from_json, grid_state_to_json
 from engine.strategies.grid import step_grid_live
+from housekeeping import DAY_MS, aggregate_old_snapshots
 from market_data.factory import build_provider
-from market_data.provider import MarketDataProvider
+from market_data.provider import INTERVAL_MS, MarketDataProvider
 from market_data.types import Kline
 
 logger = logging.getLogger(__name__)
@@ -53,6 +54,20 @@ def _last_processed_key(symbol: str, strategy_type: str) -> str:
     return f"last_ts:{symbol}:{strategy_type}"
 
 
+def _fetch_latest_closed_kline(provider: MarketDataProvider, symbol: str, poll_interval: str) -> list[Kline]:
+    """Spec line 217 wants the most recent available kline. Passing (0, 0) as the
+    window returns nothing from either real provider (Binance treats it as the
+    literal epoch window; Kraken's pagination guard drops everything before
+    end_ms). Fetch the last two candles over a real window and keep only the one
+    that has actually closed, so live trading uses a complete candle rather than
+    the still-forming one."""
+    interval_ms = INTERVAL_MS[poll_interval]
+    now_ms = int(time.time() * 1000)
+    klines = provider.get_klines(symbol, poll_interval, now_ms - 2 * interval_ms, now_ms, limit=2)
+    closed = [k for k in klines if k.close_time_ms < now_ms]
+    return closed[-1:]
+
+
 def run_cycle(
     conn: sqlite3.Connection,
     provider: MarketDataProvider,
@@ -64,7 +79,7 @@ def run_cycle(
     trade_id_map: dict[int, int],
     fetch_fn=None,
 ) -> None:
-    klines = fetch_fn() if fetch_fn is not None else provider.get_klines(symbol, poll_interval, 0, 0, limit=1)
+    klines = fetch_fn() if fetch_fn is not None else _fetch_latest_closed_kline(provider, symbol, poll_interval)
     if not klines:
         logger.debug("Aucune bougie recue pour %s, cycle ignore.", symbol)
         return
@@ -175,7 +190,7 @@ def fetch_with_retry(
     last_error: Exception | None = None
     while attempts < 3:
         try:
-            return provider.get_klines(symbol, poll_interval, 0, 0, limit=1)
+            return _fetch_latest_closed_kline(provider, symbol, poll_interval)
         except httpx.HTTPError as e:
             last_error = e
             attempts += 1
