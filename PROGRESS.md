@@ -16,7 +16,7 @@ drawdown/profit factor/expectancy/exposure/alpha/distribution/rendements
 mensuels). 50 tests, revue finale complète (10 tâches + revue globale +
 1 vague de correctifs), tous les rendus verifiés a la main.
 
-## Plan 2/5 — Backtest 🚧 en cours
+## Plan 2/5 — Backtest ✅ terminé (2026-09-16)
 
 Filtre de liquidité, 3 stratégies (Buy & Hold, DCA, Grid trading),
 `backtest.py` (téléchargement, filtre, rejeu, exports CSV). Ferme aussi
@@ -36,6 +36,21 @@ provider, valorisation moteur, `trade_stats`, couverture pagination).
 - [x] Task 11 — `backtest.py` : construction des lignes de rapport
 - [x] Task 12 — `backtest.py` : export CSV + table console + `main()` (1 correctif : paramètres de stratégie en dur, déplacés dans `config.yaml`)
 - [x] Task 13 — Vérification complète de la suite (93/93)
+
+## Revue finale du Plan 2 (2 tours de correctifs)
+
+La revue globale (après les 13 tâches, toutes déjà approuvées individuellement)
+a trouvé 1 problème critique + 5 importants invisibles tâche par tâche :
+grid tradait sur une bande de prix (25k-35k) qui ne correspond à aucun
+symbole de la watchlist (zéro trade silencieux) ; `ZeroDivisionError` sur
+les intervalles 5m/1m ; colonne "vs Buy & Hold" manquante dans le CSV brut ;
+incohérence de signe entre `avg_loss` et `biggest_loss` ; `main()` jamais
+testé ; un symbole en échec API plantait tout le run. Tous corrigés en 2
+tours (95/95 tests, dont un nouveau test bout-en-bout de `main()`).
+
+Note structurelle majeure pour le Plan 3 : les 3 stratégies (pas seulement
+grid) gardent leur état dans des variables locales à un seul appel — aucune
+n'est appelable "une bougie à la fois" par un moteur live sans redesign.
 
 ## Décisions / rulings notables (Plan 2)
 
