@@ -311,8 +311,16 @@ def _check_daily_summary(
         unrealized_pnl=unrealized_pnl, return_pct=return_pct, existing_message_id=existing_message_id,
     )
     if new_message_id is not None:
+        # Commit immediately, not deferred to the caller: send_daily_summary's
+        # HTTP call already happened above, so a crash or exception between
+        # here and the caller's own later commit would leave a real Discord
+        # message with no durable record of it -- causing the next cycle to
+        # POST a second message instead of correctly PATCHing this one,
+        # violating the spec's "jamais duplique" requirement. Committing
+        # here shrinks that window to just these two set_engine_state calls.
         set_engine_state(conn, date_key, today_str, commit=False)
         set_engine_state(conn, message_id_key, new_message_id, commit=False)
+        conn.commit()
 
 
 def run_polling_loop(

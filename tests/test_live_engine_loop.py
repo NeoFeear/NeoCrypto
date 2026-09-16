@@ -503,3 +503,54 @@ def test_run_polling_loop_sends_no_daily_summary_before_8h_paris(conn, monkeypat
     )
 
     assert calls == []
+
+
+def test_check_daily_summary_commits_state_before_caller_could_roll_it_back(conn, monkeypatch):
+    # Reproduces the exact bug the final review found: _check_daily_summary used
+    # to write date_key/message_id_key with commit=False and rely on the CALLER
+    # (run_polling_loop) to commit later -- so a crash or exception anywhere else
+    # in that same cycle's remaining processing (rolled back by run_polling_loop's
+    # except handler) would discard the record of an already-successfully-sent
+    # Discord message. The NEXT cycle would then see no stored id for today and
+    # POST a second, orphaned message instead of correctly PATCHing the first one.
+    #
+    # This test FAILS against the pre-fix code (the state does not survive the
+    # rollback, so the second call POSTs again instead of PATCHing) and PASSES
+    # post-fix, verified by temporarily reverting the live_engine.py fix and
+    # re-running this test.
+    now_paris = datetime(2026, 1, 15, 9, 0, tzinfo=ZoneInfo("Europe/Paris"))  # past the 8h threshold
+    now_ms = int(now_paris.timestamp() * 1000)
+
+    insert_snapshot(conn, PortfolioSnapshot(
+        timestamp=0, symbol="BTCUSDT", cash_balance=Decimal("1000"),
+        position_value=Decimal("0"), total_value=Decimal("1000"),
+        unrealized_pnl=Decimal("0"), realized_pnl_cumule=Decimal("0"),
+    ))
+
+    calls = []
+
+    def fake_send_daily_summary(webhook_url, **kwargs):
+        calls.append(kwargs["existing_message_id"])
+        return "999"
+
+    monkeypatch.setattr("live_engine.send_daily_summary", fake_send_daily_summary)
+
+    _check_daily_summary(conn, "BTCUSDT", "buy_hold", "https://webhook/summary", now_ms, Decimal("1000"))
+
+    # Simulate something else in this same cycle's remaining processing
+    # raising, and run_polling_loop's except handler reacting the way it
+    # really does: conn.rollback().
+    conn.rollback()
+
+    date_key = "discord_daily_summary_date:BTCUSDT:buy_hold"
+    message_id_key = "discord_daily_summary_message_id:BTCUSDT:buy_hold"
+    # Must survive the rollback -- these were committed INSIDE
+    # _check_daily_summary itself, not deferred to the caller.
+    assert db.repository.get_engine_state(conn, date_key) == "2026-01-15"
+    assert db.repository.get_engine_state(conn, message_id_key) == "999"
+
+    # A second call for the same day must PATCH using the surviving stored
+    # message id, never POST a duplicate.
+    _check_daily_summary(conn, "BTCUSDT", "buy_hold", "https://webhook/summary", now_ms, Decimal("1000"))
+
+    assert calls == [None, "999"]
