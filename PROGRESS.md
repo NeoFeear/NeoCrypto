@@ -220,8 +220,110 @@ rapport). 173 → 177 tests.
 Fusionné sur `master` en local le 2026-09-17 (177/177). Push vers
 `origin` toujours retardé jusqu'à la fin des 6 plans.
 
+## Plan 5/6 — Dashboard ✅ terminé (2026-09-17)
+
+`dashboard/app.py` : app FastAPI + Jinja2 en lecture seule, 3 pages
+server-rendered (Principal, Analyses, Transactions), bandeau simulation
+permanent sur chaque page, Chart.js via CDN (aucune dépendance Python
+lourde ajoutée). `db/repository.py` gagne `list_trades`/`list_snapshots`/
+`list_symbols_with_trades` (seul module de SQL brut, conformément à la
+contrainte posée au Plan 3).
+
+- [x] Task 1 — Requêtes lecture seule dans `db/repository.py`
+- [x] Task 2 — Squelette FastAPI + Jinja2Templates (chemin absolu dès le
+  départ, pas relatif — piège repéré en auto-relecture du plan avant tout
+  dispatch)
+- [x] Task 3 — Page Principal (`/`) : résumé portefeuille, tableau backtest
+- [x] Task 4 — Page Analyses (`/analyses`) : métriques `analytics.py`
+- [x] Task 5 — Courbe de valeur du portefeuille (Chart.js)
+- [x] Task 6 — Courbe de drawdown + distribution des trades + rendements
+  mensuels (formes de retour réelles de `analytics.py` vérifiées par
+  l'implémenteur avant intégration — aucun écart avec les hypothèses du plan)
+- [x] Task 7 — Page Transactions (`/transactions`) avec filtres type/
+  résultat/**période** (filtre période ajouté en auto-relecture du plan,
+  absent de la première rédaction — exigence de la spec repérée avant
+  dispatch)
+- [x] Task 8 — Export CSV filtré (`/transactions/export.csv`)
+- [x] Task 9 — Vérification complète de la suite (198/198) + README
+
+## Auto-relecture du plan avant dispatch (5 défauts corrigés avant tout code)
+
+- `Jinja2Templates(directory="dashboard/templates")` (chemin relatif) →
+  `Path(__file__).parent / "templates"` (absolu) : un chemin relatif se
+  résout contre le CWD du processus au moment du chargement du template,
+  ce qui casse sous `monkeypatch.chdir` en test et sous un futur
+  `WorkingDirectory=` systemd au Plan 6.
+- Test Task 1 avec un conditionnel toujours vrai (code mort) — simplifié.
+- Test Task 7 : assertion d'ordre inversée (`list_trades` trie par
+  `id DESC`, plus récent d'abord) — corrigée.
+- Filtre "période" manquant sur la page Transactions (exigence de spec) —
+  ajouté de bout en bout (route, helper `_parse_date_boundary`, template,
+  lien d'export, tests de bornes inclusives dédiés).
+- Bug chaîne-vide-vs-`None` découvert en ajoutant le filtre période : le
+  propre formulaire de filtre de la page Transactions soumet
+  `symbol=""` pour "Tous", que `list_trades(conn, "")` traiterait comme
+  "aucune ligne" plutôt que "pas de filtre" — normalisé `symbol or None`
+  à l'intérieur même de `_filtered_trades`, avec un test reproduisant la
+  vraie chaîne de requête `?symbol=&trade_type=&outcome=`.
+
+## Revue finale du Plan 5 (1 tour de correctifs + re-revue ciblée)
+
+Revue globale (exécution empirique des routes, pas seulement lecture
+statique) : aucun problème critique. 4 problèmes importants, 11 mineurs.
+
+- Important : `get_conn()` appelait `init_db()` à chaque requête — un
+  `db_path` erroné créait silencieusement une base vide, un dashboard
+  qui a l'air sain mais n'affiche simplement rien (la pire sorte de bug :
+  une réponse qui a l'air correcte mais ne l'est pas). Corrigé : connexion
+  SQLite en mode `mode=ro` (lecture seule imposée par SQLite lui-même,
+  pas seulement par convention), 503 explicite si la base est absente.
+- Important : `/analyses` plantait (`DivisionByZero`) si le capital
+  initial est à 0, contrairement à `/` qui dégrade déjà proprement.
+  Corrigé par le même garde-fou.
+- Important : durcissement CWD incomplet (même limitation que partout
+  ailleurs dans le projet) — **différé explicitement au Plan 6** : à
+  décider dans la conception de l'unité systemd (`WorkingDirectory=` sur
+  la racine du repo, ou vrai mécanisme d'ancrage de chemin pour
+  `config.yaml`/`db_path`/`backtest_report.csv`).
+- Important : métrique "vs Buy & Hold" de la spec absente en live —
+  **disclosure plutôt que code** : même limitation de schéma que le
+  graphique de prix déjà accepté (`portfolio_snapshots` ne stocke pas le
+  prix de marché par snapshot) ; nécessite un changement de schéma futur,
+  pas un contournement inventé au Plan 5.
+- Mineurs corrigés : colonne "Date/heure" en epoch-ms brut → format
+  lisible ; export CSV traitant un PnL réalisé de 0 (break-even) comme
+  vide (`or ""` sur un `Decimal("0")`, falsy en Python) ; import `csv`
+  dupliqué ; le symbole sélectionné ne survivait pas à la navigation
+  entre pages.
+- Mineurs non corrigés (jugés non prioritaires par le relecteur) : deux
+  lectures indépendantes par requête, config reparsée 3-4x/requête,
+  risque `KeyError` sur `INTERVAL_MS`, et plusieurs points stylistiques.
+
+Un tour de correctifs groupé (sonnet) a introduit une régression propre
+mais indépendante : `test_root_page_shows_simulation_banner` était le
+seul test du fichier à ne pas simuler `get_conn`, donc il tapait la
+vraie route `/` contre la vraie config — le passage à `mode=ro` le
+transformait en 503 sur un clone propre, masqué en local par un
+`crypto_sim.db` orphelin (ignoré par git) déjà présent dans le worktree.
+Trouvé par la re-revue ciblée (opus) via un clone `git archive` vraiment
+propre, corrigé en une ligne (aligné sur la convention du reste du
+fichier), re-vérifié indépendamment via un second clone propre :
+203/203, aucun fichier de base présent.
+
+Note administrative : 3 des 4 commits du tour de correctifs n'ont pas le
+trailer `Co-Authored-By` (oubli de l'agent, seul le 4ème l'a). Une
+réécriture d'historique pour l'ajouter a été bloquée par le classificateur
+de sécurité du bac à sable ("action git destructive"), aussi bien pour
+l'agent que pour moi. Sans conséquence sur le contenu (rien n'est perdu,
+commits locaux jamais poussés) — signalé à Florian, pas corrigé.
+
+Fusionné sur `master` en local le 2026-09-17 (198 → 203 tests). Push vers
+`origin` toujours retardé jusqu'à la fin des 6 plans.
+
 ## À venir
 
-Plan 5/6 — Dashboard FastAPI.
-Plan 6/6 — `setup.sh` + systemd + déploiement LXC CT303 sur Proxmox
-(inclura le gestionnaire SIGTERM différé du Plan 4).
+Plan 6/6 — `setup.sh` + systemd + déploiement LXC CT303 sur Proxmox.
+Doit traiter explicitement : le gestionnaire SIGTERM différé du Plan 4,
+le durcissement CWD différé du Plan 5, et l'I6 du Plan 3 (lots non
+scopés par stratégie) si des stratégies concurrentes sont un jour
+activées.
