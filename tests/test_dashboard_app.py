@@ -359,3 +359,16 @@ def test_transactions_export_csv_break_even_sell_is_not_blank(monkeypatch):
     assert response.status_code == 200
     rows = response.text.strip().splitlines()
     assert rows[1].split(",")[-1] == "0"
+
+
+def test_nav_links_carry_active_symbol_forward(monkeypatch):
+    # Picking a symbol on / and clicking "Analyses" must not silently
+    # revert to the config-default symbol.
+    monkeypatch.setattr("dashboard.app.get_conn", lambda: _seeded_conn())
+    monkeypatch.setattr("dashboard.app._active_symbol_default", lambda: "BTCUSDT")
+    monkeypatch.setattr("dashboard.app._initial_capital", lambda: Decimal("1000"))
+
+    response = client.get("/?symbol=ETHUSDT")
+
+    assert response.status_code == 200
+    assert 'href="/analyses?symbol=ETHUSDT"' in response.text

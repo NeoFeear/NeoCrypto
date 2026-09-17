@@ -24,8 +24,8 @@
 <body>
     <div class="banner">⚠ SIMULATION — Aucun argent réel, aucun ordre réel envoyé</div>
     <nav>
-        <a href="/">Principal</a>
-        <a href="/analyses">Analyses</a>
+        <a href="/{% if active_symbol %}?symbol={{ active_symbol }}{% endif %}">Principal</a>
+        <a href="/analyses{% if active_symbol %}?symbol={{ active_symbol }}{% endif %}">Analyses</a>
         <a href="/transactions">Transactions</a>
     </nav>
     {% block content %}{% endblock %}
