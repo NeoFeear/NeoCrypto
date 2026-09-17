@@ -6,7 +6,8 @@ from dashboard.app import app
 client = TestClient(app)
 
 
-def test_root_page_shows_simulation_banner():
+def test_root_page_shows_simulation_banner(monkeypatch):
+    monkeypatch.setattr("dashboard.app.get_conn", lambda: _seeded_conn())
     response = client.get("/")
     assert response.status_code == 200
     assert "⚠ SIMULATION — Aucun argent réel, aucun ordre réel envoyé" in response.text
