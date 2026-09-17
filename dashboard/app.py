@@ -217,3 +217,13 @@ def export_transactions_csv(
         buffer, media_type="text/csv",
         headers={"Content-Disposition": "attachment; filename=transactions.csv"},
     )
+
+
+def main() -> None:
+    import uvicorn
+    cfg = load_config()
+    uvicorn.run("dashboard.app:app", host="0.0.0.0", port=cfg.dashboard.port)
+
+
+if __name__ == "__main__":
+    main()

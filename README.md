@@ -11,14 +11,15 @@ Plan 2/6 (backtest) : filtre de liquidite, 3 strategies, `backtest.py` (telechar
 Plan 3/6 (moteur live) : persistance SQLite (WAL), strategies pilotables au poll (`step()`), `live_engine.py`
 (polling, reprise sur incident, retry/backoff, housekeeping snapshots) — termine.
 Plan 4/6 (Discord) : `discord_notifier.py` (transactions, resume quotidien, alertes seuil, logs demarrage/arret) — termine.
+Plan 5/6 (dashboard) : FastAPI + Jinja2, pages Principal/Analyses/Transactions, bandeau simulation permanent — termine.
 
 Lancer le backtest : `python backtest.py`
 Lancer le moteur live : `python live_engine.py` (tourne indefiniment, Ctrl+C pour arreter)
 Valider les notifications Discord avant le premier lancement du moteur live : `python test_notifier.py`
 (necessite `.env` rempli avec les 4 webhooks -- voir `.env.example`).
+Lancer le dashboard : `python -m dashboard.app` (port configurable dans `config.yaml`, defaut 8303).
 
-Pas encore de dashboard ni de deploiement — voir les plans suivants dans
-`docs/superpowers/plans/`.
+Pas encore de deploiement — voir `docs/superpowers/plans/` pour le plan suivant (Plan 6/6).
 
 ## Développement
 
