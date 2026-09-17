@@ -1,5 +1,7 @@
 # dashboard/app.py
 import csv
+import csv as csv_module
+import io
 import json
 import sqlite3
 from datetime import datetime, timezone
@@ -7,13 +9,14 @@ from decimal import Decimal
 from pathlib import Path
 
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 
 import analytics
 from config import load_config
 from db.migrate import init_db
 from db.repository import list_snapshots, list_symbols_with_trades, list_trades
+from engine.fifo_engine import Trade
 from market_data.provider import INTERVAL_MS
 
 app = FastAPI()
@@ -146,6 +149,30 @@ def _parse_date_boundary(date_str: str | None, end_of_day: bool) -> int | None:
     return int(dt.timestamp() * 1000)
 
 
+def _filtered_trades(
+    conn: sqlite3.Connection, symbol: str | None, trade_type: str | None, outcome: str | None,
+    date_from: str | None = None, date_to: str | None = None,
+) -> list[Trade]:
+    # symbol or None: both callers may receive an explicit empty string
+    # (a submitted-but-unset <select>, or an unset query param copied
+    # verbatim into the export link) rather than an absent param -- normalize
+    # here once so neither call site has to remember to do it separately.
+    trades = list_trades(conn, symbol or None)
+    if trade_type in ("BUY", "SELL"):
+        trades = [t for t in trades if t.side.value == trade_type]
+    if outcome == "gagnant":
+        trades = [t for t in trades if t.realized_pnl is not None and t.realized_pnl > 0]
+    elif outcome == "perdant":
+        trades = [t for t in trades if t.realized_pnl is not None and t.realized_pnl < 0]
+    from_ms = _parse_date_boundary(date_from, end_of_day=False)
+    to_ms = _parse_date_boundary(date_to, end_of_day=True)
+    if from_ms is not None:
+        trades = [t for t in trades if t.timestamp >= from_ms]
+    if to_ms is not None:
+        trades = [t for t in trades if t.timestamp <= to_ms]
+    return trades
+
+
 @app.get("/transactions", response_class=HTMLResponse)
 def transactions_page(
     request: Request, symbol: str | None = None, trade_type: str | None = None, outcome: str | None = None,
@@ -153,26 +180,7 @@ def transactions_page(
 ) -> HTMLResponse:
     conn = get_conn()
     symbols = list_symbols_with_trades(conn)
-    # The filter form's "Tous" option submits symbol="" (an explicit empty
-    # string), not an absent param -- browsers serialize every named <select>
-    # on submit, even ones left at their empty default value. list_trades'
-    # SQL does `WHERE symbol = ?`, and no trade has symbol=="", so passing ""
-    # straight through would silently return zero rows instead of "no filter".
-    trades = list_trades(conn, symbol or None)
-
-    if trade_type in ("BUY", "SELL"):
-        trades = [t for t in trades if t.side.value == trade_type]
-    if outcome == "gagnant":
-        trades = [t for t in trades if t.realized_pnl is not None and t.realized_pnl > 0]
-    elif outcome == "perdant":
-        trades = [t for t in trades if t.realized_pnl is not None and t.realized_pnl < 0]
-
-    from_ms = _parse_date_boundary(date_from, end_of_day=False)
-    to_ms = _parse_date_boundary(date_to, end_of_day=True)
-    if from_ms is not None:
-        trades = [t for t in trades if t.timestamp >= from_ms]
-    if to_ms is not None:
-        trades = [t for t in trades if t.timestamp <= to_ms]
+    trades = _filtered_trades(conn, symbol, trade_type, outcome, date_from, date_to)
 
     total_fees = sum((t.fee_amount for t in trades), Decimal("0"))
     total_realized_pnl = sum((t.realized_pnl for t in trades if t.realized_pnl is not None), Decimal("0"))
@@ -188,3 +196,24 @@ def transactions_page(
         "total_fees": total_fees,
         "total_realized_pnl": total_realized_pnl,
     })
+
+
+@app.get("/transactions/export.csv")
+def export_transactions_csv(
+    symbol: str | None = None, trade_type: str | None = None, outcome: str | None = None,
+    date_from: str | None = None, date_to: str | None = None,
+) -> StreamingResponse:
+    conn = get_conn()
+    trades = _filtered_trades(conn, symbol, trade_type, outcome, date_from, date_to)
+
+    buffer = io.StringIO()
+    writer = csv_module.writer(buffer)
+    writer.writerow(["timestamp", "symbol", "side", "price", "quantity", "total_cost", "fee_amount", "cash_balance_after", "realized_pnl"])
+    for t in trades:
+        writer.writerow([t.timestamp, t.symbol, t.side.value, t.price, t.quantity, t.total_cost, t.fee_amount, t.cash_balance_after, t.realized_pnl or ""])
+
+    buffer.seek(0)
+    return StreamingResponse(
+        buffer, media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=transactions.csv"},
+    )

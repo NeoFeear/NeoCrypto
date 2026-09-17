@@ -261,3 +261,28 @@ def test_transactions_page_date_to_is_inclusive_of_the_whole_day(monkeypatch):
     assert "100.1" in response.text
     assert "9.79" in response.text
     assert "-10.09" in response.text
+
+
+def test_transactions_export_csv_respects_filters(monkeypatch):
+    monkeypatch.setattr("dashboard.app.get_conn", lambda: _seeded_conn_with_mixed_trades())
+
+    response = client.get("/transactions/export.csv?trade_type=BUY")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/csv")
+    assert "attachment" in response.headers["content-disposition"]
+    body = response.text
+    assert "100.1" in body
+    assert "9.79" not in body
+
+
+def test_transactions_export_csv_respects_date_range(monkeypatch):
+    monkeypatch.setattr("dashboard.app.get_conn", lambda: _seeded_conn_with_mixed_trades())
+
+    response = client.get("/transactions/export.csv?date_from=1970-01-02")
+
+    assert response.status_code == 200
+    body = response.text
+    assert "100.1" not in body
+    assert "9.79" not in body
+    assert "-10.09" not in body
