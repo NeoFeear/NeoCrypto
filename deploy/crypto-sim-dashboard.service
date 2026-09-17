@@ -1,0 +1,21 @@
+[Unit]
+Description=Crypto paper-trading simulator - dashboard FastAPI (lecture seule)
+After=network-online.target crypto-sim.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=cryptosim
+Group=cryptosim
+WorkingDirectory=/opt/crypto-sim
+ExecStart=/opt/crypto-sim/.venv/bin/python -m dashboard.app
+Restart=on-failure
+RestartSec=10
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
