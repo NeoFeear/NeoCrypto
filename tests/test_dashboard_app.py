@@ -102,3 +102,50 @@ def test_index_embeds_chart_data_as_json(monkeypatch, sample_backtest_csv):
     assert "new Chart(" in response.text
     assert '"1000"' in response.text  # first snapshot's total_value, as a JSON string
     assert '"1050"' in response.text  # second snapshot's total_value
+
+
+def _seeded_conn_with_trades():
+    from db.migrate import init_db
+    from db.repository import insert_trade
+    from engine.fifo_engine import Side, Trade
+    conn = init_db(":memory:")
+    insert_snapshot(conn, PortfolioSnapshot(
+        timestamp=0, symbol="BTCUSDT", cash_balance=Decimal("500"), position_value=Decimal("500"),
+        total_value=Decimal("1000"), unrealized_pnl=Decimal("0"), realized_pnl_cumule=Decimal("0"),
+    ))
+    insert_snapshot(conn, PortfolioSnapshot(
+        timestamp=300_000, symbol="BTCUSDT", cash_balance=Decimal("500"), position_value=Decimal("550"),
+        total_value=Decimal("1050"), unrealized_pnl=Decimal("50"), realized_pnl_cumule=Decimal("0"),
+    ))
+    insert_trade(conn, Trade(
+        id=1, timestamp=0, symbol="BTCUSDT", side=Side.BUY, price=Decimal("100"), quantity=Decimal("5"),
+        fee_pct=Decimal("0.001"), fee_amount=Decimal("0.5"), total_cost=Decimal("500.5"),
+        realized_pnl=None, cash_balance_after=Decimal("500"), strategy_name="dca",
+    ))
+    return conn
+
+
+def test_analyses_page_shows_metrics_table(monkeypatch):
+    monkeypatch.setattr("dashboard.app.get_conn", lambda: _seeded_conn_with_trades())
+    monkeypatch.setattr("dashboard.app._active_symbol_default", lambda: "BTCUSDT")
+    monkeypatch.setattr("dashboard.app._poll_interval_default", lambda: "5m")
+
+    response = client.get("/analyses?symbol=BTCUSDT")
+
+    assert response.status_code == 200
+    assert "Sharpe" in response.text
+    assert "Sortino" in response.text
+    assert "Calmar" in response.text
+    assert "Profit factor" in response.text
+    assert "Expectancy" in response.text
+
+
+def test_analyses_page_with_no_data_does_not_crash(tmp_path, monkeypatch):
+    from db.migrate import init_db
+    monkeypatch.setattr("dashboard.app.get_conn", lambda: init_db(":memory:"))
+    monkeypatch.setattr("dashboard.app._active_symbol_default", lambda: "BTCUSDT")
+    monkeypatch.setattr("dashboard.app._poll_interval_default", lambda: "5m")
+
+    response = client.get("/analyses?symbol=BTCUSDT")
+
+    assert response.status_code == 200

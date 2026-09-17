@@ -9,9 +9,11 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
+import analytics
 from config import load_config
 from db.migrate import init_db
-from db.repository import list_snapshots, list_symbols_with_trades
+from db.repository import list_snapshots, list_symbols_with_trades, list_trades
+from market_data.provider import INTERVAL_MS
 
 app = FastAPI()
 # Absolute path, not the relative string "dashboard/templates": a relative
@@ -76,4 +78,41 @@ def index(request: Request, symbol: str | None = None) -> HTMLResponse:
         "backtest_rows": backtest_rows,
         "chart_labels_json": json.dumps(chart_labels),
         "chart_values_json": json.dumps(chart_values),
+    })
+
+
+def _poll_interval_default() -> str:
+    return load_config().live.poll_kline_interval
+
+
+@app.get("/analyses", response_class=HTMLResponse)
+def analyses(request: Request, symbol: str | None = None) -> HTMLResponse:
+    conn = get_conn()
+    active_symbol = symbol or _active_symbol_default()
+    symbols = list_symbols_with_trades(conn) or [active_symbol]
+    snapshots = list_snapshots(conn, active_symbol)
+    trades = list_trades(conn, active_symbol)
+
+    if snapshots:
+        periods_per_year = (365 * 24 * 3_600_000) // INTERVAL_MS[_poll_interval_default()]
+        days = max(1, (snapshots[-1].timestamp - snapshots[0].timestamp) // 86_400_000)
+        cagr = analytics.cagr_pct(_initial_capital(), snapshots[-1].total_value, days)
+        max_dd, recovery_days = analytics.max_drawdown(snapshots)
+        metrics = {
+            "sharpe": analytics.sharpe_ratio(snapshots, periods_per_year),
+            "sortino": analytics.sortino_ratio(snapshots, periods_per_year),
+            "calmar": analytics.calmar_ratio(cagr, max_dd),
+            "profit_factor": analytics.profit_factor(trades),
+            "expectancy": analytics.expectancy(trades),
+            "exposure_time_pct": analytics.exposure_time_pct(snapshots),
+            "max_drawdown_pct": max_dd,
+            "recovery_days": recovery_days,
+        }
+    else:
+        metrics = None
+
+    return templates.TemplateResponse(request, "analyses.html", {
+        "symbols": symbols,
+        "active_symbol": active_symbol,
+        "metrics": metrics,
     })

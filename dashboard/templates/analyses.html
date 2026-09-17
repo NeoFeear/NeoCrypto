@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}crypto-sim -- Analyses{% endblock %}
+{% block content %}
+<form method="get" style="margin-bottom: 1rem;">
+    <label>Symbole :
+        <select name="symbol" onchange="this.form.submit()">
+            {% for s in symbols %}
+            <option value="{{ s }}" {% if s == active_symbol %}selected{% endif %}>{{ s }}</option>
+            {% endfor %}
+        </select>
+    </label>
+</form>
+
+{% if metrics %}
+<table>
+    <tr><th>Metrique</th><th>Valeur</th></tr>
+    <tr><td>Sharpe</td><td>{{ metrics.sharpe }}</td></tr>
+    <tr><td>Sortino</td><td>{{ metrics.sortino }}</td></tr>
+    <tr><td>Calmar</td><td>{{ metrics.calmar }}</td></tr>
+    <tr><td>Profit factor</td><td>{{ metrics.profit_factor }}</td></tr>
+    <tr><td>Expectancy</td><td>{{ metrics.expectancy }}</td></tr>
+    <tr><td>Exposure time %</td><td>{{ metrics.exposure_time_pct }}</td></tr>
+    <tr><td>Drawdown max %</td><td>{{ metrics.max_drawdown_pct }}</td></tr>
+    <tr><td>Recuperation (jours)</td><td>{{ metrics.recovery_days if metrics.recovery_days is not none else "N/A" }}</td></tr>
+</table>
+{% else %}
+<p>Pas encore de donnees pour {{ active_symbol }}.</p>
+{% endif %}
+{% endblock %}
