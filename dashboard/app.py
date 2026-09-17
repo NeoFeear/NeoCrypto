@@ -116,7 +116,9 @@ def analyses(request: Request, symbol: str | None = None) -> HTMLResponse:
     if snapshots:
         periods_per_year = (365 * 24 * 3_600_000) // INTERVAL_MS[_poll_interval_default()]
         days = max(1, (snapshots[-1].timestamp - snapshots[0].timestamp) // 86_400_000)
-        cagr = analytics.cagr_pct(_initial_capital(), snapshots[-1].total_value, days)
+        initial_capital = _initial_capital()
+        cagr = (analytics.cagr_pct(initial_capital, snapshots[-1].total_value, days)
+                if initial_capital > 0 else Decimal(0))
         max_dd, recovery_days = analytics.max_drawdown(snapshots)
         metrics = {
             "sharpe": analytics.sharpe_ratio(snapshots, periods_per_year),

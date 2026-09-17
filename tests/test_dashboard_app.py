@@ -305,3 +305,18 @@ def test_get_conn_raises_friendly_503_when_database_file_is_missing(tmp_path, mo
 
     assert response.status_code == 503
     assert "Base de donnees introuvable" in response.text
+
+
+def test_analyses_page_with_zero_initial_capital_does_not_crash(monkeypatch):
+    # Mirrors the existing initial_capital=0 guard test for index(). Before
+    # this fix, cagr_pct divided by a zero initial_capital and raised
+    # decimal.DivisionByZero -> 500, even though / handles the same
+    # misconfiguration gracefully.
+    monkeypatch.setattr("dashboard.app.get_conn", lambda: _seeded_conn_with_trades())
+    monkeypatch.setattr("dashboard.app._active_symbol_default", lambda: "BTCUSDT")
+    monkeypatch.setattr("dashboard.app._poll_interval_default", lambda: "5m")
+    monkeypatch.setattr("dashboard.app._initial_capital", lambda: Decimal("0"))
+
+    response = client.get("/analyses?symbol=BTCUSDT")
+
+    assert response.status_code == 200
