@@ -13,7 +13,7 @@ set -euo pipefail
 CTID=303
 CT_HOSTNAME=crypto-sim
 TEMPLATE_STORAGE=local
-TEMPLATE=debian-13-standard_13.1-1_amd64.tar.zst
+TEMPLATE=debian-13-standard_13.6-1_amd64.tar.zst
 ROOTFS_STORAGE=local-lvm
 BRIDGE=vmbr0
 DISK_GB=8
