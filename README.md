@@ -12,14 +12,45 @@ Plan 3/6 (moteur live) : persistance SQLite (WAL), strategies pilotables au poll
 (polling, reprise sur incident, retry/backoff, housekeeping snapshots) — termine.
 Plan 4/6 (Discord) : `discord_notifier.py` (transactions, resume quotidien, alertes seuil, logs demarrage/arret) — termine.
 Plan 5/6 (dashboard) : FastAPI + Jinja2, pages Principal/Analyses/Transactions, bandeau simulation permanent — termine.
+Plan 6/6 (deploiement) : `deploy/setup.sh` (provisioning applicatif idempotent), 2 unites systemd durcies
+(moteur live + dashboard), `deploy/provision-ct303.sh` (creation LXC cote Proxmox) — termine.
 
 Lancer le backtest : `python backtest.py`
-Lancer le moteur live : `python live_engine.py` (tourne indefiniment, Ctrl+C pour arreter)
+Lancer le moteur live : `python live_engine.py` (tourne indefiniment, Ctrl+C ou SIGTERM pour arreter proprement)
 Valider les notifications Discord avant le premier lancement du moteur live : `python test_notifier.py`
 (necessite `.env` rempli avec les 4 webhooks -- voir `.env.example`).
 Lancer le dashboard : `python -m dashboard.app` (port configurable dans `config.yaml`, defaut 8303).
 
-Pas encore de deploiement — voir `docs/superpowers/plans/` pour le plan suivant (Plan 6/6).
+## Déploiement (CT303 sur Proxmox)
+
+1. Sur l'hote Proxmox (192.168.1.54, root) : `bash deploy/provision-ct303.sh` — cree et demarre CT303
+   (Debian 13, non privilegie, IP DHCP). Recuperer son IP : `pct exec 303 -- ip -4 addr show eth0`.
+2. Copier le code applicatif dans le conteneur sous `/opt/crypto-sim` (a l'exclusion de `.git/`,
+   `.venv/`, `__pycache__/`, `.worktrees/`, `*.db`) — tant que ce depot n'est pas encore pousse sur
+   `origin`, le plus simple est une archive tar transferee via `pct push` :
+   ```bash
+   tar --exclude='.git' --exclude='.venv' --exclude='__pycache__' --exclude='.worktrees' \
+       --exclude='*.db' --exclude='*.db-wal' --exclude='*.db-shm' -czf /tmp/crypto-sim.tar.gz .
+   scp /tmp/crypto-sim.tar.gz root@192.168.1.54:/tmp/
+   ssh root@192.168.1.54 "pct push 303 /tmp/crypto-sim.tar.gz /tmp/crypto-sim.tar.gz && \
+     pct exec 303 -- mkdir -p /opt/crypto-sim && \
+     pct exec 303 -- tar xzf /tmp/crypto-sim.tar.gz -C /opt/crypto-sim"
+   ```
+   Une fois `origin` a jour (apres ce plan), un `git clone`/`git pull` direct dans le conteneur
+   remplace cette etape.
+3. Copier `.env` separement (jamais dans l'archive/le depot) : `scp .env root@192.168.1.54:/tmp/` puis
+   `pct push 303 /tmp/.env /opt/crypto-sim/.env`.
+4. Dans le conteneur (root) : `pct exec 303 -- bash /opt/crypto-sim/deploy/setup.sh` — installe les
+   paquets systeme, cree l'utilisateur dedie `cryptosim`, le venv, initialise le schema SQLite, installe
+   et active les 2 unites systemd.
+5. Verifier : `pct exec 303 -- systemctl status crypto-sim.service crypto-sim-dashboard.service`,
+   `pct exec 303 -- journalctl -u crypto-sim.service -n 50`, puis `curl http://<IP-CT303>:8303/` depuis
+   le LAN.
+6. Entree Homepage (CT104) : **non faite** — CT104 est volontairement arrete ("homepage ne me sert
+   pas"), pas un oubli.
+
+Mise a jour du code : refaire l'etape 2 (ou `git pull` une fois `origin` a jour), puis
+`pct exec 303 -- systemctl restart crypto-sim.service crypto-sim-dashboard.service`.
 
 ## Développement
 
