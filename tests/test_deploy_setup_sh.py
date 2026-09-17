@@ -61,3 +61,43 @@ def test_setup_sh_installs_and_enables_both_systemd_units():
 def test_setup_sh_initializes_the_database_schema():
     text = SETUP_SH.read_text(encoding="utf-8")
     assert "init_db" in text
+
+
+def test_setup_sh_initializes_the_db_path_from_config_not_hardcoded():
+    # Plan's own Global Constraint: paths stay in config.yaml/deploy/*,
+    # never hardcoded. Reading db_path via config.load_config() means a
+    # future change to config.yaml's db_path can't silently init the
+    # wrong file.
+    text = SETUP_SH.read_text(encoding="utf-8")
+    assert "load_config" in text
+    assert "init_db(load_config().db_path)" in text
+    assert "init_db('crypto_sim.db')" not in text
+
+
+def test_setup_sh_does_not_depend_on_sudo():
+    # sudo is not guaranteed present in the Debian 13 LXC template and is
+    # not in the apt install list -- if absent, `set -e` aborts
+    # mid-provisioning. runuser (util-linux) is always present on Debian.
+    text = SETUP_SH.read_text(encoding="utf-8")
+    assert "sudo " not in text
+    assert 'runuser -u "$APP_USER" --' in text
+
+
+def test_setup_sh_uses_noninteractive_apt_frontend():
+    # pct exec allocates a tty, so a conffile prompt on `apt-get install`
+    # would otherwise hang with no timeout.
+    text = SETUP_SH.read_text(encoding="utf-8")
+    assert "DEBIAN_FRONTEND=noninteractive" in text
+
+
+def test_setup_sh_restricts_env_file_permissions():
+    text = SETUP_SH.read_text(encoding="utf-8")
+    assert 'chmod 600 "$APP_DIR/.env"' in text
+
+
+def test_setup_sh_warns_that_rerunning_does_not_restart_active_services():
+    # systemctl enable --now is a no-op on an already-active service, so a
+    # setup.sh re-run after a code update silently leaves stale code
+    # running unless the operator restarts services manually.
+    text = SETUP_SH.read_text(encoding="utf-8")
+    assert "systemctl restart crypto-sim.service crypto-sim-dashboard.service" in text

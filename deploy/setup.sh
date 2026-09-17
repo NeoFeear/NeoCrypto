@@ -19,6 +19,7 @@ if [ ! -d "$APP_DIR" ]; then
   exit 1
 fi
 
+export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get install -y python3 python3-venv python3-pip tzdata
 
@@ -28,22 +29,26 @@ fi
 chown -R "$APP_USER:$APP_USER" "$APP_DIR"
 
 if [ ! -d "$APP_DIR/.venv" ]; then
-  sudo -u "$APP_USER" python3 -m venv "$APP_DIR/.venv"
+  runuser -u "$APP_USER" -- python3 -m venv "$APP_DIR/.venv"
 fi
-sudo -u "$APP_USER" "$APP_DIR/.venv/bin/pip" install --upgrade pip
-sudo -u "$APP_USER" "$APP_DIR/.venv/bin/pip" install -r "$APP_DIR/requirements.txt"
+runuser -u "$APP_USER" -- "$APP_DIR/.venv/bin/pip" install --upgrade pip
+runuser -u "$APP_USER" -- "$APP_DIR/.venv/bin/pip" install -r "$APP_DIR/requirements.txt"
 
 if [ ! -f "$APP_DIR/.env" ]; then
   echo "WARNING: $APP_DIR/.env is missing -- Discord notifications will stay" \
        "silent until it is created (see .env.example). Not blocking the rest of setup." >&2
+else
+  chmod 600 "$APP_DIR/.env"
 fi
 
 # cd first: the DB path in config.yaml (db_path: crypto_sim.db) is relative,
 # matching every other path in this app (see the plan's CWD-hardening
 # decision) -- it must resolve against APP_DIR, not wherever setup.sh itself
-# was invoked from.
-( cd "$APP_DIR" && sudo -u "$APP_USER" "$APP_DIR/.venv/bin/python" -c \
-    "from db.migrate import init_db; init_db('crypto_sim.db')" )
+# was invoked from. Read db_path from config.yaml via load_config() instead
+# of hardcoding it here, so a future change to config.yaml's db_path can't
+# silently init the wrong file.
+( cd "$APP_DIR" && runuser -u "$APP_USER" -- "$APP_DIR/.venv/bin/python" -c \
+    "from config import load_config; from db.migrate import init_db; init_db(load_config().db_path)" )
 
 install -m 0644 "$APP_DIR/deploy/crypto-sim.service" /etc/systemd/system/crypto-sim.service
 install -m 0644 "$APP_DIR/deploy/crypto-sim-dashboard.service" /etc/systemd/system/crypto-sim-dashboard.service
@@ -54,3 +59,4 @@ systemctl enable --now crypto-sim-dashboard.service
 echo "Deploiement termine. Verifier avec :"
 echo "  systemctl status crypto-sim.service crypto-sim-dashboard.service"
 echo "  journalctl -u crypto-sim.service -f"
+echo "NOTE: si ce script tourne suite a une mise a jour du code, relancer aussi 'systemctl restart crypto-sim.service crypto-sim-dashboard.service' -- 'enable --now' ne redemarre pas un service deja actif." >&2

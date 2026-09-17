@@ -21,7 +21,10 @@ RAM_MB=768
 CORES=1
 
 if pct status "$CTID" >/dev/null 2>&1; then
-  echo "CT$CTID existe deja, rien a faire." >&2
+  if ! pct status "$CTID" | grep -q running; then
+    pct start "$CTID"
+  fi
+  echo "CT$CTID existe deja (demarre si necessaire), rien d'autre a faire." >&2
   exit 0
 fi
 
@@ -39,7 +42,8 @@ pct create "$CTID" "${TEMPLATE_STORAGE}:vztmpl/${TEMPLATE}" \
   --memory "$RAM_MB" \
   --cores "$CORES" \
   --onboot 1 \
-  --start 1
+  --start 1 \
+  --timezone Europe/Paris
 
 echo "CT$CTID cree et demarre. Verifier l'IP attribuee avec :"
 echo "  pct exec $CTID -- ip -4 addr show eth0"
