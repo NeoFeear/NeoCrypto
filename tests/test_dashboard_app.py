@@ -320,3 +320,42 @@ def test_analyses_page_with_zero_initial_capital_does_not_crash(monkeypatch):
     response = client.get("/analyses?symbol=BTCUSDT")
 
     assert response.status_code == 200
+
+
+def test_transactions_page_renders_readable_date_not_raw_epoch_ms(monkeypatch):
+    # The "Date/heure" column must show a human-readable date, not the raw
+    # epoch-ms integer.
+    monkeypatch.setattr("dashboard.app.get_conn", lambda: _seeded_conn_with_mixed_trades())
+
+    response = client.get("/transactions")
+
+    assert response.status_code == 200
+    assert "1970-01-01" in response.text
+    # ts=600_000 ms would otherwise render as the raw standalone cell "600000"
+    assert ">600000<" not in response.text
+
+
+def test_transactions_export_csv_break_even_sell_is_not_blank(monkeypatch):
+    # Decimal("0") is falsy in Python, so `t.realized_pnl or ""` would
+    # export an empty cell for a break-even SELL -- indistinguishable from
+    # a BUY that has no realized_pnl at all. Must use `is not None`.
+    from db.migrate import init_db
+    from db.repository import insert_trade
+    from engine.fifo_engine import Side, Trade
+
+    def _seeded_conn_with_break_even_sell():
+        conn = init_db(":memory:")
+        insert_trade(conn, Trade(
+            id=1, timestamp=0, symbol="BTCUSDT", side=Side.SELL, price=Decimal("100"), quantity=Decimal("1"),
+            fee_pct=Decimal("0.001"), fee_amount=Decimal("0.1"), total_cost=Decimal("100"),
+            realized_pnl=Decimal("0"), cash_balance_after=Decimal("1000"), strategy_name="dca",
+        ))
+        return conn
+
+    monkeypatch.setattr("dashboard.app.get_conn", lambda: _seeded_conn_with_break_even_sell())
+
+    response = client.get("/transactions/export.csv")
+
+    assert response.status_code == 200
+    rows = response.text.strip().splitlines()
+    assert rows[1].split(",")[-1] == "0"

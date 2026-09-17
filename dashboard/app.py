@@ -29,12 +29,17 @@ def _database_not_available(request: Request, exc: sqlite3.OperationalError) -> 
     )
 
 
+def _format_timestamp(ts_ms: int) -> str:
+    return datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+
 # Absolute path, not the relative string "dashboard/templates": a relative
 # searchpath is resolved against the process's CURRENT working directory at
 # template-load time (not at this line's execution time), which breaks the
 # moment anything changes cwd -- a test using monkeypatch.chdir, or Plan 6's
 # systemd unit running this from an unrelated WorkingDirectory=.
 templates = Jinja2Templates(directory=Path(__file__).parent / "templates")
+templates.env.filters["format_ts"] = _format_timestamp
 
 
 def get_conn() -> sqlite3.Connection:
@@ -228,7 +233,7 @@ def export_transactions_csv(
     writer = csv.writer(buffer)
     writer.writerow(["timestamp", "symbol", "side", "price", "quantity", "total_cost", "fee_amount", "cash_balance_after", "realized_pnl"])
     for t in trades:
-        writer.writerow([t.timestamp, t.symbol, t.side.value, t.price, t.quantity, t.total_cost, t.fee_amount, t.cash_balance_after, t.realized_pnl or ""])
+        writer.writerow([t.timestamp, t.symbol, t.side.value, t.price, t.quantity, t.total_cost, t.fee_amount, t.cash_balance_after, t.realized_pnl if t.realized_pnl is not None else ""])
 
     buffer.seek(0)
     return StreamingResponse(

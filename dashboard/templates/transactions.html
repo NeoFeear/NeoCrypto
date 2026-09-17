@@ -37,7 +37,7 @@
     </tr>
     {% for t in trades %}
     <tr>
-        <td>{{ t.timestamp }}</td><td>{{ t.symbol }}</td><td>{{ t.side.value }}</td>
+        <td>{{ t.timestamp | format_ts }}</td><td>{{ t.symbol }}</td><td>{{ t.side.value }}</td>
         <td>{{ t.price }}</td><td>{{ t.quantity }}</td><td>{{ t.total_cost }}</td><td>{{ t.fee_amount }}</td>
         <td>{{ t.cash_balance_after }}</td>
         <td class="{% if t.realized_pnl is not none and t.realized_pnl >= 0 %}gain{% elif t.realized_pnl is not none %}loss{% endif %}">
