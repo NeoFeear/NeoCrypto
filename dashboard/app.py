@@ -1,6 +1,5 @@
 # dashboard/app.py
 import csv
-import csv as csv_module
 import io
 import json
 import sqlite3
@@ -9,17 +8,27 @@ from decimal import Decimal
 from pathlib import Path
 
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 
 import analytics
 from config import load_config
-from db.migrate import init_db
 from db.repository import list_snapshots, list_symbols_with_trades, list_trades
 from engine.fifo_engine import Trade
 from market_data.provider import INTERVAL_MS
 
 app = FastAPI()
+
+
+@app.exception_handler(sqlite3.OperationalError)
+def _database_not_available(request: Request, exc: sqlite3.OperationalError) -> PlainTextResponse:
+    return PlainTextResponse(
+        "Base de donnees introuvable ou inaccessible. Lancez live_engine.py "
+        "au moins une fois pour l'initialiser avant d'utiliser le dashboard.",
+        status_code=503,
+    )
+
+
 # Absolute path, not the relative string "dashboard/templates": a relative
 # searchpath is resolved against the process's CURRENT working directory at
 # template-load time (not at this line's execution time), which breaks the
@@ -30,11 +39,18 @@ templates = Jinja2Templates(directory=Path(__file__).parent / "templates")
 
 def get_conn() -> sqlite3.Connection:
     """Read-only usage from every dashboard route -- never insert/update/delete.
-    A fresh connection per request is simplest and cheap for a low-traffic
-    LAN dashboard; WAL mode (already set by init_db) supports concurrent
-    readers alongside the live engine's own writer connection."""
+    Opened in SQLite's own read-only URI mode so this is enforced by SQLite
+    itself, not just by convention: a plain read-write connection (via
+    init_db) would otherwise run schema migrations and commit on every
+    single request, taking write locks against the live engine's own
+    connection and silently fabricating an empty database if db_path is
+    ever wrong -- a healthy-looking dashboard with silently no data, the
+    worst kind of bug. mode=ro also fails loudly (OperationalError) if the
+    database file doesn't exist yet, rather than creating one."""
     cfg = load_config()
-    return init_db(cfg.db_path)
+    conn = sqlite3.connect(f"file:{cfg.db_path}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    return conn
 
 
 def _active_symbol_default() -> str:
@@ -207,7 +223,7 @@ def export_transactions_csv(
     trades = _filtered_trades(conn, symbol, trade_type, outcome, date_from, date_to)
 
     buffer = io.StringIO()
-    writer = csv_module.writer(buffer)
+    writer = csv.writer(buffer)
     writer.writerow(["timestamp", "symbol", "side", "price", "quantity", "total_cost", "fee_amount", "cash_balance_after", "realized_pnl"])
     for t in trades:
         writer.writerow([t.timestamp, t.symbol, t.side.value, t.price, t.quantity, t.total_cost, t.fee_amount, t.cash_balance_after, t.realized_pnl or ""])

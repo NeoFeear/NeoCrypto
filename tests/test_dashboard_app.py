@@ -13,11 +13,13 @@ def test_root_page_shows_simulation_banner():
 
 
 import csv
+from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
 
 import pytest
 
+from config import load_config
 from db.repository import insert_snapshot
 from models import PortfolioSnapshot
 
@@ -286,3 +288,20 @@ def test_transactions_export_csv_respects_date_range(monkeypatch):
     assert "100.1" not in body
     assert "9.79" not in body
     assert "-10.09" not in body
+
+
+def test_get_conn_raises_friendly_503_when_database_file_is_missing(tmp_path, monkeypatch):
+    # Exercises the REAL get_conn() (not monkeypatched away) against a
+    # tmp_path whose db file genuinely does not exist, all the way through a
+    # route, and confirms the app-level exception handler degrades to a 503
+    # with a friendly French message instead of an unhandled 500 with a
+    # stack trace.
+    real_config = load_config()
+    missing_db_path = str(tmp_path / "does_not_exist.db")
+    fake_config = replace(real_config, db_path=missing_db_path)
+    monkeypatch.setattr("dashboard.app.load_config", lambda: fake_config)
+
+    response = client.get("/")
+
+    assert response.status_code == 503
+    assert "Base de donnees introuvable" in response.text
