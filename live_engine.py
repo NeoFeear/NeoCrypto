@@ -1,4 +1,5 @@
 import logging
+import signal
 import sqlite3
 import time
 from datetime import datetime
@@ -26,6 +27,22 @@ from market_data.provider import INTERVAL_MS, MarketDataProvider
 from market_data.types import Kline
 
 logger = logging.getLogger(__name__)
+
+
+def _raise_keyboard_interrupt(signum, frame) -> None:
+    """Maps SIGTERM (a `systemctl stop` under Plan 6's systemd unit) onto the
+    same graceful-shutdown path already used for SIGINT (Ctrl+C) in main() --
+    both should stop the polling loop identically, so there is exactly one
+    exit path to keep correct instead of two. Python's default SIGTERM
+    handling would otherwise terminate the process before any except/finally
+    block runs, skipping the shutdown send_log call and the DB connection
+    close in main()'s finally."""
+    raise KeyboardInterrupt()
+
+
+def install_signal_handlers() -> None:
+    signal.signal(signal.SIGTERM, _raise_keyboard_interrupt)
+
 
 _STATE_LOADERS = {
     "buy_hold": (buy_hold_state_from_json, lambda: BuyHoldState()),
@@ -414,6 +431,7 @@ def run_polling_loop(
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    install_signal_handlers()
     cfg = load_config()
     provider = build_provider(cfg.data_source)
     conn = init_db(cfg.db_path)
@@ -448,8 +466,8 @@ def main() -> None:
             drawdown_threshold_pct=cfg.discord.alert_drawdown_threshold_pct,
         )
     except KeyboardInterrupt:
-        logger.info("Arret demande (Ctrl+C).")
-        send_log(discord_webhooks.logs, f"Moteur live arrete (Ctrl+C) pour {symbol}/{strategy_type}.", level="INFO")
+        logger.info("Arret demande.")
+        send_log(discord_webhooks.logs, f"Moteur live arrete pour {symbol}/{strategy_type}.", level="INFO")
     except Exception as e:
         logger.exception("Arret inattendu du moteur live pour %s/%s.", symbol, strategy_type)
         send_alert(
