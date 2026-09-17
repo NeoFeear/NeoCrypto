@@ -320,10 +320,109 @@ commits locaux jamais poussés) — signalé à Florian, pas corrigé.
 Fusionné sur `master` en local le 2026-09-17 (198 → 203 tests). Push vers
 `origin` toujours retardé jusqu'à la fin des 6 plans.
 
-## À venir
+## Plan 6/6 — Déploiement ✅ terminé (2026-09-17)
 
-Plan 6/6 — `setup.sh` + systemd + déploiement LXC CT303 sur Proxmox.
-Doit traiter explicitement : le gestionnaire SIGTERM différé du Plan 4,
-le durcissement CWD différé du Plan 5, et l'I6 du Plan 3 (lots non
-scopés par stratégie) si des stratégies concurrentes sont un jour
-activées.
+`live_engine.py` gagne un gestionnaire SIGTERM (différé du Plan 4) qui
+route proprement vers le même chemin d'arrêt que Ctrl+C. `deploy/` : 2
+unités systemd durcies (moteur live + dashboard), `setup.sh` (provisioning
+applicatif idempotent), `provision-ct303.sh` (création LXC côté Proxmox).
+CT303 **réellement provisionné et déployé** sur le Proxmox (192.168.1.54,
+CT303 = 192.168.1.84, Debian 13, non privilégié, DHCP, timezone
+Europe/Paris) — pas seulement écrit, exécuté pour de vrai.
+
+- [x] Task 1 — Gestionnaire SIGTERM (`_raise_keyboard_interrupt`/
+  `install_signal_handlers`), un seul chemin d'arrêt pour Ctrl+C et SIGTERM
+- [x] Task 2 — 2 unités systemd durcies (NoNewPrivileges, ProtectSystem=strict,
+  ProtectHome, PrivateTmp, utilisateur dédié `cryptosim`)
+- [x] Task 3 — `deploy/setup.sh` (1 tour de correctifs : BOM UTF-8 accidentel
+  dans le script + test de syntaxe bash cassé sur Windows car `bash` résolvait
+  vers le stub WSL de System32 plutôt que le vrai bash de Git Bash — les deux
+  corrigés et re-vérifiés)
+- [x] Task 4 — `deploy/provision-ct303.sh` (1 réclamation de relecteur écartée :
+  prétendait qu'un fichier test n'existait pas alors qu'il existait bel et
+  bien — vérifié directement, classée sans suite)
+- [x] Task 5 — Mise à jour README (runbook de déploiement complet)
+
+## Revue finale du Plan 6 (1 tour de correctifs + re-revue, opus)
+
+1 Critical, 6 Important, 10 Minor. Le Critical retombait directement sur
+un défaut du plan que j'ai écrit moi-même : l'unité systemd du dashboard
+avait `ProtectSystem=strict` sans aucun `ReadWritePaths`, en pensant que
+"le dashboard n'écrit jamais donc c'est une couche de durcissement
+gratuite" — sans tenir compte du fait que SQLite en mode WAL a besoin
+d'ouvrir le fichier `-shm` en lecture-écriture pour qu'un lecteur puisse
+prendre un verrou de lecture. Résultat réel : le dashboard aurait affiché
+`active` côté systemd tout en servant du 503 sur chaque page dès que le
+moteur live écrit activement, avec un message d'erreur trompeur ("base de
+données introuvable"). Corrigé (ReadWritePaths ajouté, test qui verrouillait
+la config cassée réécrit), **et vérifié empiriquement en conditions réelles**
+lors du déploiement (voir plus bas).
+
+Autres corrections (Important) : dépendance à `sudo` non garantie dans le
+LXC → `runuser` ; chemin DB en dur dans `setup.sh` → lu depuis
+`config.yaml` ; aucun test ne vérifiait `WorkingDirectory=/opt/crypto-sim`
+(la directive la plus structurante du plan) ; aucun garde-fou BOM/CRLF
+malgré la régression déjà survenue en Task 3 ; `provision-ct303.sh`
+traitait un CT303 arrêté comme "rien à faire" au lieu de le redémarrer ;
+le `tar` du README n'excluait pas `.env`, ce qui aurait fait fuiter les 4
+webhooks Discord dans une archive lisible par tous sans nettoyage.
+Corrections mineures groupées : avertissement de redémarrage manquant
+dans `setup.sh`, `PYTHONUNBUFFERED`/`SyslogIdentifier` sur les 2 unités,
+scripts non exécutables, `DEBIAN_FRONTEND=noninteractive`, timezone
+manquante sur `provision-ct303.sh`. 221 → 235 tests, tous vérifiés
+indépendamment par la re-revue (blobs pré-correctif re-dérivés, chaque
+assertion confirmée rouge-puis-verte).
+
+Différé/documenté sans changement de code : la portée de
+`ReadWritePaths=/opt/crypto-sim` couvre le répertoire de code, pas
+seulement les données (la spec §14 demandait plus étroit — même
+catégorie de déviation assumée que la décision logrotate/CT104 du Plan 5,
+un `StateDirectory=` séparé casserait le workflow dev Windows) ; 2
+fenêtres de micro-race SIGTERM déjà documentées en commentaire dans
+`live_engine.py` (le rapporteur lui-même a dit "à documenter, pas à
+corriger").
+
+## Déploiement réel (Task 6, exécuté directement par la session orchestratrice)
+
+- Vérifié avant exécution : noms de storage (`local`, `local-lvm`) et
+  bridge (`vmbr0`) conformes aux hypothèses du script ; version du
+  template `debian-13-standard` corrigée de `13.1-1` (obsolète) à `13.6-1`
+  (réellement en cache) avant de lancer `provision-ct303.sh` pour de vrai.
+- `provision-ct303.sh` exécuté sur l'hôte Proxmox : CT303 créé et démarré,
+  IP DHCP **192.168.1.84**, timezone Europe/Paris.
+- Code transféré via tar (exclusion vérifiée de `.env`/`*.db`) + `pct push`
+  + extraction (avec `--no-same-owner`, le tar Windows enregistrait des
+  UID/GID que le conteneur non privilégié refusait de restaurer) ; `.env`
+  transféré séparément, jamais dans l'archive ; toutes les copies
+  temporaires nettoyées sur les 3 hôtes (local, Proxmox, CT303) après coup.
+- `setup.sh` exécuté dans CT303 : réussi du premier coup après les
+  corrections de la revue finale.
+- Vérification empirique complète : les 2 services `active`, le moteur
+  live a réellement tourné un cycle (bougie Binance récupérée, 1 trade
+  DCA exécuté, 3 notifications Discord envoyées avec succès), 1 ligne
+  dans `portfolio_snapshots` et `trades` (pas juste "démarré sans
+  planter"), dashboard `http://192.168.1.84:8303/` → 200 avec bannière
+  simulation et symbole BTCUSDT réellement affiché.
+- **Test du gestionnaire SIGTERM en conditions réelles** :
+  `systemctl stop crypto-sim.service` → log "Arret demande.", notification
+  Discord d'arrêt envoyée, `Result=success`/`ExecMainStatus=0`, arrêt
+  propre sans dépassement du `TimeoutStopSec` ni SIGKILL. Redémarré
+  ensuite (`systemctl start`), dashboard re-testé à 200 après coup —
+  **cette transition stop/start exerce exactement le scénario WAL/`-shm`
+  du correctif Critical, confirmant empiriquement qu'il tient.**
+- Entrée Homepage (CT104) : **non faite**, décision délibérée — CT104 est
+  volontairement arrêté depuis une session précédente ("homepage ne me
+  sert pas"), pas un oubli.
+
+Note administrative (comme au Plan 5) : les commits du tour de correctifs
+final n'ont pas systématiquement le trailer `Co-Authored-By` sur chaque
+commit — signalé, sans conséquence sur le contenu, commits locaux avant
+fusion.
+
+Fusionné sur `master` en local le 2026-09-17 (203 → 235 tests, +1 commit
+correctif de version de template pendant l'exécution de Task 6).
+
+**Les 6 plans sont maintenant terminés.** Prochaine étape : premier push
+vers `origin` (GitHub `NeoFeear/NeoCrypto`), conformément à l'instruction
+explicite de Florian ("push et commit quand t'auras tout fini"), confirmée
+via question directe pendant cette session.
