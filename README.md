@@ -30,16 +30,22 @@ Lancer le dashboard : `python -m dashboard.app` (port configurable dans `config.
    `origin`, le plus simple est une archive tar transferee via `pct push` :
    ```bash
    tar --exclude='.git' --exclude='.venv' --exclude='__pycache__' --exclude='.worktrees' \
-       --exclude='*.db' --exclude='*.db-wal' --exclude='*.db-shm' -czf /tmp/crypto-sim.tar.gz .
+       --exclude='*.db' --exclude='*.db-wal' --exclude='*.db-shm' --exclude='.env' \
+       -czf /tmp/crypto-sim.tar.gz .
    scp /tmp/crypto-sim.tar.gz root@192.168.1.54:/tmp/
    ssh root@192.168.1.54 "pct push 303 /tmp/crypto-sim.tar.gz /tmp/crypto-sim.tar.gz && \
      pct exec 303 -- mkdir -p /opt/crypto-sim && \
      pct exec 303 -- tar xzf /tmp/crypto-sim.tar.gz -C /opt/crypto-sim"
+   rm -f /tmp/crypto-sim.tar.gz
+   ssh root@192.168.1.54 "rm -f /tmp/crypto-sim.tar.gz && pct exec 303 -- rm -f /tmp/crypto-sim.tar.gz"
    ```
    Une fois `origin` a jour (apres ce plan), un `git clone`/`git pull` direct dans le conteneur
    remplace cette etape.
-3. Copier `.env` separement (jamais dans l'archive/le depot) : `scp .env root@192.168.1.54:/tmp/` puis
-   `pct push 303 /tmp/.env /opt/crypto-sim/.env`.
+3. Copier `.env` separement (jamais dans l'archive/le depot -- l'archive de l'etape 2 l'exclut
+   explicitement) : `scp .env root@192.168.1.54:/tmp/` puis
+   `pct push 303 /tmp/.env /opt/crypto-sim/.env` (ecrit directement dans le conteneur, pas de fichier
+   temporaire cote CT303), puis nettoyer la copie temporaire laissee sur l'hote Proxmox :
+   `ssh root@192.168.1.54 "rm -f /tmp/.env"`.
 4. Dans le conteneur (root) : `pct exec 303 -- bash /opt/crypto-sim/deploy/setup.sh` — installe les
    paquets systeme, cree l'utilisateur dedie `cryptosim`, le venv, initialise le schema SQLite, installe
    et active les 2 unites systemd.
