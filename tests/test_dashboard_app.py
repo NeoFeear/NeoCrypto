@@ -162,3 +162,102 @@ def test_analyses_page_shows_drawdown_chart_distribution_and_monthly_table(monke
     assert "drawdown-chart" in response.text
     assert "trade-distribution-chart" in response.text
     assert "Rendements mensuels" in response.text
+
+
+def _seeded_conn_with_mixed_trades():
+    from db.migrate import init_db
+    from db.repository import insert_trade
+    from engine.fifo_engine import Side, Trade
+    conn = init_db(":memory:")
+    insert_trade(conn, Trade(
+        id=1, timestamp=0, symbol="BTCUSDT", side=Side.BUY, price=Decimal("100"), quantity=Decimal("1"),
+        fee_pct=Decimal("0.001"), fee_amount=Decimal("0.1"), total_cost=Decimal("100.1"),
+        realized_pnl=None, cash_balance_after=Decimal("899.9"), strategy_name="dca",
+    ))
+    insert_trade(conn, Trade(
+        id=2, timestamp=300_000, symbol="BTCUSDT", side=Side.SELL, price=Decimal("110"), quantity=Decimal("1"),
+        fee_pct=Decimal("0.001"), fee_amount=Decimal("0.11"), total_cost=Decimal("109.89"),
+        realized_pnl=Decimal("9.79"), cash_balance_after=Decimal("1009.79"), strategy_name="dca",
+    ))
+    insert_trade(conn, Trade(
+        id=3, timestamp=600_000, symbol="BTCUSDT", side=Side.SELL, price=Decimal("90"), quantity=Decimal("1"),
+        fee_pct=Decimal("0.001"), fee_amount=Decimal("0.09"), total_cost=Decimal("89.91"),
+        realized_pnl=Decimal("-10.09"), cash_balance_after=Decimal("999.7"), strategy_name="dca",
+    ))
+    return conn
+
+
+def test_transactions_page_shows_all_trades_newest_first(monkeypatch):
+    monkeypatch.setattr("dashboard.app.get_conn", lambda: _seeded_conn_with_mixed_trades())
+
+    response = client.get("/transactions")
+
+    assert response.status_code == 200
+    text = response.text
+    # list_trades orders by id DESC (newest first): id 3 (ts=600_000), then id 2 (ts=300_000), then id 1 (ts=0)
+    assert text.index("-10.09") < text.index("9.79") < text.index("100.1")
+
+
+def test_transactions_page_filters_by_type(monkeypatch):
+    monkeypatch.setattr("dashboard.app.get_conn", lambda: _seeded_conn_with_mixed_trades())
+
+    response = client.get("/transactions?trade_type=BUY")
+
+    assert "100.1" in response.text
+    assert "9.79" not in response.text
+
+
+def test_transactions_page_filters_by_outcome(monkeypatch):
+    monkeypatch.setattr("dashboard.app.get_conn", lambda: _seeded_conn_with_mixed_trades())
+
+    response = client.get("/transactions?outcome=gagnant")
+
+    assert "9.79" in response.text
+    assert "-10.09" not in response.text
+
+
+def test_transactions_page_shows_total_row(monkeypatch):
+    monkeypatch.setattr("dashboard.app.get_conn", lambda: _seeded_conn_with_mixed_trades())
+
+    response = client.get("/transactions")
+
+    assert "Total" in response.text
+
+
+def test_transactions_page_with_explicit_empty_symbol_shows_all_trades(monkeypatch):
+    # Reproduces a real filter-form submission: the "Tous" <option value="">
+    # is still a named field, so browsers submit symbol="" (an explicit empty
+    # string), never an absent param. This must behave identically to no
+    # filter at all, not silently match zero trades.
+    monkeypatch.setattr("dashboard.app.get_conn", lambda: _seeded_conn_with_mixed_trades())
+
+    response = client.get("/transactions?symbol=&trade_type=&outcome=")
+
+    assert "100.1" in response.text
+    assert "9.79" in response.text
+    assert "-10.09" in response.text
+
+
+def test_transactions_page_filters_by_date_range(monkeypatch):
+    # All 3 fixture trades land on 1970-01-01 UTC (ts=0/300_000/600_000 ms are
+    # all within the first day). A date_from of the NEXT day excludes all of
+    # them, proving the boundary is a real epoch-ms comparison against
+    # date_from's start-of-day, not a no-op.
+    monkeypatch.setattr("dashboard.app.get_conn", lambda: _seeded_conn_with_mixed_trades())
+
+    response = client.get("/transactions?date_from=1970-01-02")
+
+    assert response.status_code == 200
+    assert "100.1" not in response.text
+    assert "9.79" not in response.text
+    assert "-10.09" not in response.text
+
+
+def test_transactions_page_date_to_is_inclusive_of_the_whole_day(monkeypatch):
+    monkeypatch.setattr("dashboard.app.get_conn", lambda: _seeded_conn_with_mixed_trades())
+
+    response = client.get("/transactions?date_to=1970-01-01")
+
+    assert "100.1" in response.text
+    assert "9.79" in response.text
+    assert "-10.09" in response.text

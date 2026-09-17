@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block title %}crypto-sim -- Transactions{% endblock %}
+{% block content %}
+<form method="get" style="margin-bottom: 1rem; display: flex; gap: 1rem;">
+    <label>Symbole :
+        <select name="symbol">
+            <option value="">Tous</option>
+            {% for s in symbols %}
+            <option value="{{ s }}" {% if s == selected_symbol %}selected{% endif %}>{{ s }}</option>
+            {% endfor %}
+        </select>
+    </label>
+    <label>Type :
+        <select name="trade_type">
+            <option value="">Tous</option>
+            <option value="BUY" {% if selected_type == "BUY" %}selected{% endif %}>Achat</option>
+            <option value="SELL" {% if selected_type == "SELL" %}selected{% endif %}>Vente</option>
+        </select>
+    </label>
+    <label>Resultat :
+        <select name="outcome">
+            <option value="">Tous</option>
+            <option value="gagnant" {% if selected_outcome == "gagnant" %}selected{% endif %}>Gagnant</option>
+            <option value="perdant" {% if selected_outcome == "perdant" %}selected{% endif %}>Perdant</option>
+        </select>
+    </label>
+    <label>Du : <input type="date" name="date_from" value="{{ selected_date_from }}"></label>
+    <label>Au : <input type="date" name="date_to" value="{{ selected_date_to }}"></label>
+    <button type="submit">Filtrer</button>
+    <a href="/transactions/export.csv?symbol={{ selected_symbol }}&trade_type={{ selected_type }}&outcome={{ selected_outcome }}&date_from={{ selected_date_from }}&date_to={{ selected_date_to }}">Exporter CSV</a>
+</form>
+
+<table>
+    <tr>
+        <th>Date/heure</th><th>Symbole</th><th>Type</th><th>Prix</th><th>Quantite</th>
+        <th>Montant</th><th>Frais</th><th>Solde apres</th><th>Gain/Perte</th>
+    </tr>
+    {% for t in trades %}
+    <tr>
+        <td>{{ t.timestamp }}</td><td>{{ t.symbol }}</td><td>{{ t.side.value }}</td>
+        <td>{{ t.price }}</td><td>{{ t.quantity }}</td><td>{{ t.total_cost }}</td><td>{{ t.fee_amount }}</td>
+        <td>{{ t.cash_balance_after }}</td>
+        <td class="{% if t.realized_pnl is not none and t.realized_pnl >= 0 %}gain{% elif t.realized_pnl is not none %}loss{% endif %}">
+            {{ t.realized_pnl if t.realized_pnl is not none else "" }}
+        </td>
+    </tr>
+    {% endfor %}
+    <tr><td colspan="6"><strong>Total</strong></td><td><strong>{{ total_fees }}</strong></td><td></td><td><strong>{{ total_realized_pnl }}</strong></td></tr>
+</table>
+{% endblock %}

@@ -2,6 +2,7 @@
 import csv
 import json
 import sqlite3
+from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 
@@ -129,4 +130,61 @@ def analyses(request: Request, symbol: str | None = None) -> HTMLResponse:
         "dd_values_json": dd_values_json if snapshots else "[]",
         "dist_labels_json": dist_labels_json if snapshots else "[]",
         "dist_counts_json": dist_counts_json if snapshots else "[]",
+    })
+
+
+def _parse_date_boundary(date_str: str | None, end_of_day: bool) -> int | None:
+    """Converts a YYYY-MM-DD string (interpreted as UTC, matching the
+    exchange kline timestamps trades ultimately derive from) into an
+    inclusive epoch-ms boundary. Returns None for an empty/missing string
+    -- an unbounded filter, not "match nothing"."""
+    if not date_str:
+        return None
+    dt = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    if end_of_day:
+        dt = dt.replace(hour=23, minute=59, second=59, microsecond=999_000)
+    return int(dt.timestamp() * 1000)
+
+
+@app.get("/transactions", response_class=HTMLResponse)
+def transactions_page(
+    request: Request, symbol: str | None = None, trade_type: str | None = None, outcome: str | None = None,
+    date_from: str | None = None, date_to: str | None = None,
+) -> HTMLResponse:
+    conn = get_conn()
+    symbols = list_symbols_with_trades(conn)
+    # The filter form's "Tous" option submits symbol="" (an explicit empty
+    # string), not an absent param -- browsers serialize every named <select>
+    # on submit, even ones left at their empty default value. list_trades'
+    # SQL does `WHERE symbol = ?`, and no trade has symbol=="", so passing ""
+    # straight through would silently return zero rows instead of "no filter".
+    trades = list_trades(conn, symbol or None)
+
+    if trade_type in ("BUY", "SELL"):
+        trades = [t for t in trades if t.side.value == trade_type]
+    if outcome == "gagnant":
+        trades = [t for t in trades if t.realized_pnl is not None and t.realized_pnl > 0]
+    elif outcome == "perdant":
+        trades = [t for t in trades if t.realized_pnl is not None and t.realized_pnl < 0]
+
+    from_ms = _parse_date_boundary(date_from, end_of_day=False)
+    to_ms = _parse_date_boundary(date_to, end_of_day=True)
+    if from_ms is not None:
+        trades = [t for t in trades if t.timestamp >= from_ms]
+    if to_ms is not None:
+        trades = [t for t in trades if t.timestamp <= to_ms]
+
+    total_fees = sum((t.fee_amount for t in trades), Decimal("0"))
+    total_realized_pnl = sum((t.realized_pnl for t in trades if t.realized_pnl is not None), Decimal("0"))
+
+    return templates.TemplateResponse(request, "transactions.html", {
+        "symbols": symbols,
+        "selected_symbol": symbol or "",
+        "selected_type": trade_type or "",
+        "selected_outcome": outcome or "",
+        "selected_date_from": date_from or "",
+        "selected_date_to": date_to or "",
+        "trades": trades,
+        "total_fees": total_fees,
+        "total_realized_pnl": total_realized_pnl,
     })
