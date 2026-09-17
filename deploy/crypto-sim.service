@@ -8,6 +8,8 @@ Type=simple
 User=cryptosim
 Group=cryptosim
 WorkingDirectory=/opt/crypto-sim
+Environment=PYTHONUNBUFFERED=1
+SyslogIdentifier=crypto-sim
 ExecStart=/opt/crypto-sim/.venv/bin/python /opt/crypto-sim/live_engine.py
 Restart=on-failure
 RestartSec=10

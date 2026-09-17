@@ -8,6 +8,8 @@ Type=simple
 User=cryptosim
 Group=cryptosim
 WorkingDirectory=/opt/crypto-sim
+Environment=PYTHONUNBUFFERED=1
+SyslogIdentifier=crypto-sim-dashboard
 ExecStart=/opt/crypto-sim/.venv/bin/python -m dashboard.app
 Restart=on-failure
 RestartSec=10
@@ -16,6 +18,7 @@ NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
+ReadWritePaths=/opt/crypto-sim
 
 [Install]
 WantedBy=multi-user.target
