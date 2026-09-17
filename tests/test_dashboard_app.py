@@ -149,3 +149,16 @@ def test_analyses_page_with_no_data_does_not_crash(tmp_path, monkeypatch):
     response = client.get("/analyses?symbol=BTCUSDT")
 
     assert response.status_code == 200
+
+
+def test_analyses_page_shows_drawdown_chart_distribution_and_monthly_table(monkeypatch):
+    monkeypatch.setattr("dashboard.app.get_conn", lambda: _seeded_conn_with_trades())
+    monkeypatch.setattr("dashboard.app._active_symbol_default", lambda: "BTCUSDT")
+    monkeypatch.setattr("dashboard.app._poll_interval_default", lambda: "5m")
+
+    response = client.get("/analyses?symbol=BTCUSDT")
+
+    assert response.status_code == 200
+    assert "drawdown-chart" in response.text
+    assert "trade-distribution-chart" in response.text
+    assert "Rendements mensuels" in response.text

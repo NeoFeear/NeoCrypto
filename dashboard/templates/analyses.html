@@ -26,4 +26,33 @@
 {% else %}
 <p>Pas encore de donnees pour {{ active_symbol }}.</p>
 {% endif %}
+
+{% if metrics %}
+<h2>Courbe de drawdown</h2>
+<canvas id="drawdown-chart" height="60"></canvas>
+<script>
+new Chart(document.getElementById("drawdown-chart"), {
+    type: "line",
+    data: { labels: {{ dd_labels_json | safe }}, datasets: [{ label: "Drawdown %", data: {{ dd_values_json | safe }}.map(Number), borderColor: "#f87171" }] },
+    options: { scales: { x: { display: false } } },
+});
+</script>
+
+<h2>Distribution des trades</h2>
+<canvas id="trade-distribution-chart" height="60"></canvas>
+<script>
+new Chart(document.getElementById("trade-distribution-chart"), {
+    type: "bar",
+    data: { labels: {{ dist_labels_json | safe }}, datasets: [{ label: "Nombre de trades", data: {{ dist_counts_json | safe }}, backgroundColor: "#93c5fd" }] },
+});
+</script>
+
+<h2>Rendements mensuels</h2>
+<table>
+    <tr><th>Mois</th><th>Rendement %</th></tr>
+    {% for month, pct in monthly_returns.items() %}
+    <tr><td>{{ month }}</td><td class="{% if pct >= 0 %}gain{% else %}loss{% endif %}">{{ pct }}</td></tr>
+    {% endfor %}
+</table>
+{% endif %}
 {% endblock %}

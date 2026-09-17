@@ -108,6 +108,15 @@ def analyses(request: Request, symbol: str | None = None) -> HTMLResponse:
             "max_drawdown_pct": max_dd,
             "recovery_days": recovery_days,
         }
+
+        dd_curve = analytics.drawdown_curve(snapshots)
+        distribution = analytics.trade_distribution(trades)
+        monthly = analytics.monthly_returns(snapshots)
+
+        dd_labels_json = json.dumps([ts for ts, _ in dd_curve])
+        dd_values_json = json.dumps([str(pct) for _, pct in dd_curve])
+        dist_labels_json = json.dumps([str(bucket["range_low"]) for bucket in distribution])
+        dist_counts_json = json.dumps([bucket["count"] for bucket in distribution])
     else:
         metrics = None
 
@@ -115,4 +124,9 @@ def analyses(request: Request, symbol: str | None = None) -> HTMLResponse:
         "symbols": symbols,
         "active_symbol": active_symbol,
         "metrics": metrics,
+        "monthly_returns": monthly if snapshots else {},
+        "dd_labels_json": dd_labels_json if snapshots else "[]",
+        "dd_values_json": dd_values_json if snapshots else "[]",
+        "dist_labels_json": dist_labels_json if snapshots else "[]",
+        "dist_counts_json": dist_counts_json if snapshots else "[]",
     })
