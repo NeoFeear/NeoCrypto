@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env bash
+#!/usr/bin/env bash
 # deploy/setup.sh -- app-level provisioning. Run as root INSIDE the target
 # LXC (CT303) after the application code has already been placed at
 # /opt/crypto-sim (see docs/superpowers/plans/2026-09-17-crypto-sim-deployment.md,

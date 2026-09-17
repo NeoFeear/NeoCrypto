@@ -1,11 +1,36 @@
+import shutil
 import subprocess
 from pathlib import Path
+
+import pytest
 
 SETUP_SH = Path("deploy/setup.sh")
 
 
+def _find_real_bash() -> str | None:
+    """On Windows, `bash` may resolve to the WSL launcher stub in
+    System32, which prints a WSL-install message and exits 1 instead
+    of running bash -- distinguish that from a real bash.exe (Git
+    Bash or an actual WSL bash) by actually running it."""
+    candidates = [shutil.which("bash")]
+    candidates += [
+        r"C:\Program Files\Git\bin\bash.exe",
+        r"C:\Program Files\Git\usr\bin\bash.exe",
+    ]
+    for candidate in candidates:
+        if not candidate or not Path(candidate).exists():
+            continue
+        probe = subprocess.run([candidate, "-c", "echo ok"], capture_output=True, text=True)
+        if probe.returncode == 0 and "ok" in probe.stdout:
+            return candidate
+    return None
+
+
 def test_setup_sh_has_valid_bash_syntax():
-    result = subprocess.run(["bash", "-n", str(SETUP_SH)], capture_output=True, text=True)
+    bash = _find_real_bash()
+    if bash is None:
+        pytest.skip("no working bash found on PATH (Windows WSL-stub bash.exe does not count)")
+    result = subprocess.run([bash, "-n", str(SETUP_SH)], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
 
 
