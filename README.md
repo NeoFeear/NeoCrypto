@@ -15,6 +15,24 @@ Plan 5/6 (dashboard) : FastAPI + Jinja2, pages Principal/Analyses/Transactions, 
 Plan 6/6 (deploiement) : `deploy/setup.sh` (provisioning applicatif idempotent), 2 unites systemd durcies
 (moteur live + dashboard), `deploy/provision-ct303.sh` (creation LXC cote Proxmox) — termine.
 
+## État live (CT303)
+
+Le moteur live tourne actuellement sur 9 paires (`live.pairs` dans `config.yaml` du
+conteneur) : `BTCUSDT`/dca, `ETHUSDT`/dca, `BNBUSDT`/grid, `SOLUSDT`/grid, `XRPUSDT`/grid,
+`ADAUSDT`/grid, `DOGEUSDT`/grid, `LINKUSDT`/grid, `ZECUSDT`/grid.
+
+2026-09-22 : `BTCUSDT`/`ETHUSDT` (dca) ont ete retires temporairement plus tot dans la
+journee (pas en positif), puis reintegres le jour meme a la demande de Florian. Leur etat
+(`engine_state`/`lots`, keye par `symbol:strategy`) a repris exactement ou il s'etait
+arrete — aucune perte d'historique.
+
+**Note de synchronisation :** le `config.yaml` (et la logique associee — RSI/ATR
+adaptatifs pour `dca`, grille Fibonacci auto-adaptative pour `grid`, plusieurs paires en
+parallele) a evolue directement sur CT303 depuis le dernier commit pousse sur ce depot ;
+le `config.yaml` versionne ici reflete encore la version mono-symbole du Plan 6. A
+resynchroniser explicitement avant de se fier au depot comme source de verite pour le
+comportement live actuel.
+
 Lancer le backtest : `python backtest.py`
 Lancer le moteur live : `python live_engine.py` (tourne indefiniment, Ctrl+C ou SIGTERM pour arreter proprement)
 Valider les notifications Discord avant le premier lancement du moteur live : `python test_notifier.py`
