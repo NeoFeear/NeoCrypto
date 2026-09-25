@@ -13,9 +13,10 @@ import httpx
 from config import LivePair, load_config
 from db.migrate import init_db
 from db.repository import get_engine_state, insert_snapshot, insert_trade, replace_lots_for_symbol, set_engine_state
+from logutil import RepeatFilter
 from discord_notifier import (
     DiscordWebhooks, PairDailySummary, load_discord_webhooks, send_alert, send_log,
-    send_portfolio_daily_summary, send_transaction,
+    send_portfolio_daily_summary, send_transaction, start_background_delivery, stop_background_delivery,
 )
 from engine.fifo_engine import FifoEngine, Lot, Side, Trade
 from engine.strategies import base as strategy_base
@@ -538,7 +539,6 @@ def run_pair_worker(
         send_alert(discord_webhooks.alerts, "api_error", message, severity="critical")
 
     logger.info("Demarrage du moteur live: %s / %s", symbol, strategy_type)
-    send_log(discord_webhooks.logs, f"Moteur live demarre pour {symbol}/{strategy_type}.", level="INFO")
 
     # Exactly one pair-worker thread (the first one configured, e.g. BTCUSDT/dca)
     # is the "leader" that checks/sends the consolidated daily summary covering
@@ -573,18 +573,28 @@ def run_pair_worker(
             severity="critical",
         )
     finally:
-        send_log(discord_webhooks.logs, f"Moteur live arrete pour {symbol}/{strategy_type}.", level="INFO")
+        logger.info("Moteur live arrete: %s / %s", symbol, strategy_type)
         conn.close()
 
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    # A DCA pair out of cash re-logs the same "BUY rejete" every poll; keep one
+    # line per symbol per 6h (the masked count is reported on the next one).
+    logging.getLogger("engine.fifo_engine").addFilter(RepeatFilter(window_s=6 * 3600))
     install_signal_handlers()
     cfg = load_config()
     discord_webhooks = load_discord_webhooks()
+    # Every Discord message from here on is delivered by one background thread:
+    # no pair-worker thread ever waits on Discord (rate limits, DNS at boot).
+    start_background_delivery()
 
-    logger.info("Demarrage du moteur live sur %d paire(s): %s", len(cfg.live.pairs),
-                ", ".join(f"{p.symbol}/{p.strategy}" for p in cfg.live.pairs))
+    pairs_label = ", ".join(f"{p.symbol}/{p.strategy}" for p in cfg.live.pairs)
+    logger.info("Demarrage du moteur live sur %d paire(s): %s", len(cfg.live.pairs), pairs_label)
+    # One start message for the whole engine rather than one per pair thread:
+    # N simultaneous posts is exactly the burst that got the logs webhook
+    # rate-limited (Retry-After ~33 min) on every restart.
+    send_log(discord_webhooks.logs, f"Moteur live demarre sur {len(cfg.live.pairs)} paire(s) : {pairs_label}.", level="INFO")
 
     threads = [
         threading.Thread(
@@ -611,6 +621,10 @@ def main() -> None:
         _stop_event.set()
         for t in threads:
             t.join()
+    finally:
+        send_log(discord_webhooks.logs, f"Moteur live arrete ({len(cfg.live.pairs)} paire(s)).", level="INFO")
+        # Bounded well under systemd's TimeoutStopSec=30 so the unit stops cleanly.
+        stop_background_delivery(timeout=10)
 
 
 if __name__ == "__main__":

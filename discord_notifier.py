@@ -1,4 +1,6 @@
 import logging
+import queue
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -36,35 +38,67 @@ def load_discord_webhooks(env_path: str = ".env") -> DiscordWebhooks:
     )
 
 
-def _post_embed(webhook_url: str, embed: dict) -> str | None:
+# Longest Retry-After an inline caller may be made to wait. Discord answers a
+# webhook burst with a Retry-After of a second or two, but once a webhook is
+# temporarily banned it can answer 30+ minutes (1992s seen live on CT303,
+# 2026-09-25): sleeping that long inside a pair-worker thread froze that
+# pair's trading for the whole duration. Past this cap the message is
+# dropped and logged instead.
+_MAX_INLINE_RETRY_AFTER_S = 15.0
+
+
+def _post_embed(
+    webhook_url: str, embed: dict, *, max_retry_after: float = _MAX_INLINE_RETRY_AFTER_S, network_retries: int = 0,
+) -> str | None:
     """POSTs one embed to a Discord webhook. Returns the created message's id
     (needed by send_portfolio_daily_summary to PATCH it later), or None if webhook_url
     is empty or the send failed for any reason. Spec section 7: webhook
     errors (404, 429) are logged locally and must never crash the caller.
-    On 429: exactly 1 retry, delay from the Retry-After header."""
+    On 429: exactly 1 retry, delay from the Retry-After header -- unless that
+    delay exceeds max_retry_after, in which case it gives up at once.
+    Transport errors (DNS not ready, refused connection, timeout) are retried
+    network_retries times with a growing backoff: 0 by default so an inline
+    caller never waits on the network; the background sender opts in."""
     if not webhook_url:
         logger.debug("Webhook Discord non configure, envoi ignore.")
         return None
 
-    for attempt in range(2):
+    rate_limited_once = False
+    network_attempt = 0
+    while True:
         try:
             response = httpx.post(webhook_url, json=embed, params={"wait": "true"}, timeout=_TIMEOUT_SECONDS)
             response.raise_for_status()
             return response.json().get("id")
         except httpx.HTTPStatusError as e:
             status = e.response.status_code
-            if status == 429 and attempt == 0:
+            if status == 429 and not rate_limited_once:
                 retry_after = float(e.response.headers.get("Retry-After", "1"))
+                if retry_after > max_retry_after:
+                    logger.warning("Discord 429, Retry-After %ss au-dela du plafond de %ss : message abandonne.",
+                                   retry_after, max_retry_after)
+                    return None
                 logger.warning("Discord 429, retry dans %ss.", retry_after)
+                rate_limited_once = True
                 time.sleep(retry_after)
                 continue
             logger.warning("Envoi Discord echoue (HTTP %s): %s", status, e)
+            return None
+        except httpx.TransportError as e:
+            if network_attempt < network_retries:
+                delay = min(2.0 * 2 ** network_attempt, 30.0)
+                network_attempt += 1
+                logger.warning("Envoi Discord echoue (%s), nouvel essai %d/%d dans %ss.",
+                               e, network_attempt, network_retries, delay)
+                time.sleep(delay)
+                continue
+            logger.warning("Envoi Discord echoue: %s", e)
             return None
         except httpx.HTTPError as e:
             logger.warning("Envoi Discord echoue: %s", e)
             return None
         except Exception as e:
-            # Final safety net, additive to the two clauses above: never remove
+            # Final safety net, additive to the clauses above: never remove
             # or narrow those. Catches anything they don't already -- e.g.
             # response.json() raising json.JSONDecodeError on a non-JSON body
             # (an intercepting proxy's HTML error page), or httpx.InvalidURL
@@ -75,7 +109,6 @@ def _post_embed(webhook_url: str, embed: dict) -> str | None:
             # would defeat its entire "never crash the caller" contract.
             logger.warning("Envoi Discord echoue (erreur inattendue): %s", e)
             return None
-    return None
 
 
 def _patch_embed(webhook_url: str, message_id: str, embed: dict) -> bool:
@@ -96,6 +129,89 @@ def _patch_embed(webhook_url: str, message_id: str, embed: dict) -> bool:
         # anything httpx.HTTPError doesn't already cover (e.g. httpx.InvalidURL).
         logger.warning("Edition Discord echouee (erreur inattendue): %s", e)
         return False
+
+
+class _BackgroundSender:
+    """One daemon thread that delivers fire-and-forget messages (transactions,
+    alerts, start/stop logs) so no pair-worker thread ever waits on Discord.
+
+    Paces consecutive posts to the same webhook (Discord allows ~5 requests
+    per 2s per webhook; 9 pair threads posting at once used to exceed it and
+    got the webhook temporarily banned), may wait out a long Retry-After
+    since only this thread waits, and retries transport errors so a message
+    sent before DNS is up at boot still arrives."""
+
+    _QUEUE_MAX = 1000
+
+    def __init__(self, min_interval_s: float) -> None:
+        self._min_interval_s = min_interval_s
+        self._queue: queue.Queue = queue.Queue(maxsize=self._QUEUE_MAX)
+        self._last_sent: dict[str, float] = {}
+        self._thread = threading.Thread(target=self._run, name="discord-sender", daemon=True)
+        self._thread.start()
+
+    def submit(self, webhook_url: str, payload: dict) -> None:
+        try:
+            self._queue.put_nowait((webhook_url, payload))
+        except queue.Full:
+            logger.warning("File d'envoi Discord pleine (%d), message abandonne.", self._QUEUE_MAX)
+
+    def _run(self) -> None:
+        while True:
+            item = self._queue.get()
+            if item is None:
+                return
+            webhook_url, payload = item
+            wait = self._last_sent.get(webhook_url, float("-inf")) + self._min_interval_s - time.monotonic()
+            if wait > 0:
+                time.sleep(wait)
+            try:
+                _post_embed(webhook_url, payload, max_retry_after=120.0, network_retries=5)
+            except Exception:  # _post_embed never raises; belt and braces for this thread's life
+                logger.exception("Envoi Discord en arriere-plan en echec.")
+            self._last_sent[webhook_url] = time.monotonic()
+
+    def close(self, timeout: float) -> None:
+        """Delivers what is already queued, for at most `timeout` seconds, then stops."""
+        try:
+            self._queue.put(None, timeout=timeout)
+        except queue.Full:
+            return
+        self._thread.join(timeout)
+        if self._thread.is_alive():
+            logger.warning("Arret : %d message(s) Discord non envoye(s) dans le delai.", self._queue.qsize())
+
+
+_sender: _BackgroundSender | None = None
+_sender_lock = threading.Lock()
+
+
+def start_background_delivery(min_interval_s: float = 0.6) -> None:
+    """Routes send_transaction/send_alert/send_log through the background
+    sender. Called once by live_engine.main(); tests and one-shot scripts
+    that never call it keep the original synchronous behaviour."""
+    global _sender
+    with _sender_lock:
+        if _sender is None:
+            _sender = _BackgroundSender(min_interval_s)
+
+
+def stop_background_delivery(timeout: float = 10.0) -> None:
+    global _sender
+    with _sender_lock:
+        sender, _sender = _sender, None
+    if sender is not None:
+        sender.close(timeout)
+
+
+def _deliver(webhook_url: str, payload: dict) -> None:
+    if not webhook_url:
+        return
+    sender = _sender
+    if sender is not None:
+        sender.submit(webhook_url, payload)
+    else:
+        _post_embed(webhook_url, payload)
 
 
 _COLOR_BUY = 0x95A5A6
@@ -184,7 +300,7 @@ def send_transaction(webhook_url: str, trade: Trade, initial_cash: Decimal | Non
         "fields": fields,
         "timestamp": datetime.fromtimestamp(trade.timestamp / 1000, tz=timezone.utc).isoformat(),
     }
-    _post_embed(webhook_url, {"embeds": [embed]})
+    _deliver(webhook_url, {"embeds": [embed]})
 
 
 _COLOR_CRITICAL = 0xE74C3C
@@ -205,7 +321,7 @@ def send_alert(webhook_url: str, alert_type: str, message: str, severity: str) -
         "description": message,
         "color": _ALERT_COLORS.get(severity, _COLOR_WARNING),
     }
-    _post_embed(webhook_url, {"embeds": [embed]})
+    _deliver(webhook_url, {"embeds": [embed]})
 
 
 def send_log(webhook_url: str, message: str, level: str) -> None:
@@ -216,7 +332,7 @@ def send_log(webhook_url: str, message: str, level: str) -> None:
         "description": message,
         "color": _COLOR_LOG,
     }
-    _post_embed(webhook_url, {"embeds": [embed]})
+    _deliver(webhook_url, {"embeds": [embed]})
 
 
 @dataclass(frozen=True)
