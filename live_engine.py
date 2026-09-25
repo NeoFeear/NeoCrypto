@@ -579,6 +579,9 @@ def run_pair_worker(
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    # httpx logs every request URL at INFO -- that wrote the secret Discord webhook
+    # URLs into journald on every message, plus 1 line per pair per poll.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
     # A DCA pair out of cash re-logs the same "BUY rejete" every poll; keep one
     # line per symbol per 6h (the masked count is reported on the next one).
     logging.getLogger("engine.fifo_engine").addFilter(RepeatFilter(window_s=6 * 3600))
