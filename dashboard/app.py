@@ -40,6 +40,20 @@ def _format_timestamp(ts_ms: int) -> str:
 # moment anything changes cwd -- a test using monkeypatch.chdir, or Plan 6's
 # systemd unit running this from an unrelated WorkingDirectory=.
 templates = Jinja2Templates(directory=Path(__file__).parent / "templates")
+
+
+def _num(value, digits: int = 2) -> str:
+    """Fixed-point display for Decimal/float values (a raw Decimal quotient
+    rendered 27 digits: "-0.999811862203201699120418800%")."""
+    if value is None:
+        return "N/A"
+    try:
+        return f"{Decimal(str(value)):.{digits}f}"
+    except Exception:
+        return str(value)
+
+
+templates.env.filters["num"] = _num
 templates.env.filters["format_ts"] = _format_timestamp
 templates.env.filters["format_qty"] = format_quantity
 

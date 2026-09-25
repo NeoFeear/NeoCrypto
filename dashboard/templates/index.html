@@ -13,13 +13,13 @@
 
 {% if latest %}
 <div class="stat-tiles">
-    <div class="stat-tile"><div class="label">Valeur totale</div><div class="value">{{ latest.total_value }}</div></div>
+    <div class="stat-tile"><div class="label">Valeur totale</div><div class="value">{{ latest.total_value|num }}</div></div>
     <div class="stat-tile"><div class="label">PnL realise cumule</div>
-        <div class="value {% if latest.realized_pnl_cumule >= 0 %}gain{% else %}loss{% endif %}">{{ latest.realized_pnl_cumule }}</div></div>
+        <div class="value {% if latest.realized_pnl_cumule >= 0 %}gain{% else %}loss{% endif %}">{{ latest.realized_pnl_cumule|num }}</div></div>
     <div class="stat-tile"><div class="label">PnL latent</div>
-        <div class="value {% if latest.unrealized_pnl >= 0 %}gain{% else %}loss{% endif %}">{{ latest.unrealized_pnl }}</div></div>
+        <div class="value {% if latest.unrealized_pnl >= 0 %}gain{% else %}loss{% endif %}">{{ latest.unrealized_pnl|num }}</div></div>
     <div class="stat-tile"><div class="label">Rendement depuis le debut</div>
-        <div class="value {% if return_pct >= 0 %}gain{% else %}loss{% endif %}">{{ return_pct }}%</div></div>
+        <div class="value {% if return_pct >= 0 %}gain{% else %}loss{% endif %}">{{ return_pct|num }}%</div></div>
 </div>
 {% else %}
 <p>Aucune donnee de portefeuille pour {{ active_symbol }} pour l'instant.</p>
