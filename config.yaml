@@ -1,11 +1,19 @@
 data_source: binance
 db_path: crypto_sim.db
 
+# 8 cryptos majeures (grosse capitalisation, forte liquidite Binance). Le
+# backtest (backtest.py) tourne sur toute cette liste ; le moteur live ne
+# tourne que sur les paires listees dans live.pairs ci-dessous.
 watchlist:
   - BTCUSDT
   - ETHUSDT
-  - SOLUSDT
   - BNBUSDT
+  - SOLUSDT
+  - XRPUSDT
+  - ADAUSDT
+  - DOGEUSDT
+  - LINKUSDT
+  - ZECUSDT
 
 liquidity:
   min_quote_volume_24h: 50000000
@@ -22,8 +30,39 @@ fees:
 live:
   poll_interval_seconds: 300
   poll_kline_interval: 5m
-  active_symbol: BTCUSDT
-  active_strategy: dca
+  # Budget total du moteur live, partage A PARTS EGALES entre toutes les
+  # paires ci-dessous (1000 / 9 paires actives = ~111.11 chacune). Independant
+  # de backtest.initial_capital (qui reste le montant plein par symbole,
+  # utilise uniquement par backtest.py pour comparer les strategies entre
+  # elles).
+  total_capital: 1000
+  # Chaque paire tourne dans son propre thread, avec son propre portefeuille
+  # virtuel (capital = total_capital / nombre de paires), independamment des
+  # autres.
+  # 2026-09-22 : BTCUSDT/ETHUSDT (strategie dca) reintegres a la demande de
+  # Florian, apres un retrait temporaire plus tot le meme jour. L'etat
+  # persiste (engine_state/lots keyes par symbol:strategy) redemarre depuis
+  # ou il s'etait arrete. Le leader du resume quotidien Discord
+  # (cfg.live.pairs[0]) redevient donc BTCUSDT/dca.
+  pairs:
+    - symbol: BTCUSDT
+      strategy: dca
+    - symbol: ETHUSDT
+      strategy: dca
+    - symbol: BNBUSDT
+      strategy: grid
+    - symbol: SOLUSDT
+      strategy: grid
+    - symbol: XRPUSDT
+      strategy: grid
+    - symbol: ADAUSDT
+      strategy: grid
+    - symbol: DOGEUSDT
+      strategy: grid
+    - symbol: LINKUSDT
+      strategy: grid
+    - symbol: ZECUSDT
+      strategy: grid
 
 snapshots:
   retention_detail_days: 30
@@ -41,9 +80,59 @@ strategy_defaults:
     amount_per_buy: 50
     frequency_hours: 24
     reference_price: close
+    # -- RSI(14), seuils 30/70 : lever standard des bots DCA retail
+    # (3Commas "RSI oversold entry", Coinrule) pour moduler l'achat programme
+    # selon le momentum plutot qu'aveuglement a intervalle fixe --
+    rsi_period: 14
+    rsi_oversold: 30
+    rsi_overbought: 70
+    # RSI <= 30 (survendu) : achat programme multiplie par dip_buy_multiplier.
+    # RSI >= 70 (surachete) : achat programme saute entierement (on n'achete
+    # pas un sommet / une surchauffe).
+    dip_buy_multiplier: 2
+    # -- ATR(14), multiplicateurs 2-3x : sorties qui s'adaptent automatiquement
+    # a la volatilite propre a chaque crypto (pratique standard des bots de
+    # trading algo) -- un % fixe n'a pas le meme sens pour BTC (peu volatil en
+    # %) que pour DOGE (tres volatil), donc prioritaire des que l'historique
+    # est suffisant (voir atr_period). Sorties toujours evaluees sur le lot
+    # le plus ancien (FIFO) uniquement.
+    atr_period: 14
+    atr_take_profit_mult: 3
+    atr_stop_loss_mult: 2
+    atr_trailing_stop_mult: 2
+    # Repli en % fixe, utilise tant que l'ATR n'a pas assez d'historique
+    # (par ex. juste apres un redemarrage du moteur live).
+    take_profit_pct: 6
+    stop_loss_pct: 10
+    trailing_stop_pct: 4
   grid:
-    lower_bound: 25000
-    upper_bound: 35000
     n_levels: 10
-    spacing: geometric
+    # Niveaux places aux ratios de retracement de Fibonacci standards
+    # (23.6/38.2/50/61.8/78.6%) entre les bornes -- zones de support/
+    # resistance reellement observees par les traders, plutot qu'un
+    # espacement uniforme arbitraire. n_levels est ignore dans ce mode (6
+    # segments fixes) ; conserve pour "arithmetic"/"geometric" (backtest.py
+    # les utilise aussi via ce meme fichier de config).
+    spacing: fibonacci
     order_size_quote: 100
+    # -- grid auto-adaptatif (additive) --
+    # Pas de lower_bound/upper_bound fixes : au demarrage, les bornes sont
+    # calculees automatiquement a +/- band_pct autour du prix courant.
+    # Fonctionne identiquement quelle que soit l'echelle de prix du symbole
+    # (BTC a 60000$ ou XRP a 0.50$).
+    band_pct: 12
+    # A partir du premier re-centrage, la largeur de bande devient dependante
+    # de l'ATR (pratique standard des bots grid : marche volatil -> grille
+    # plus large, marche calme -> grille plus serree) au lieu de rester figee
+    # a band_pct. band_pct reste le repli tant que l'ATR n'est pas encore
+    # "chauffe" (historique insuffisant).
+    atr_period: 14
+    atr_band_multiplier: 3
+    # Si le prix casse les bornes actuelles de plus de rebuild_breakout_pct,
+    # la grille est re-centree sur le nouveau prix : a la hausse, les niveaux
+    # remplis sont deja vendus normalement (leur propre prix de vente est
+    # necessairement atteint avant la bordure haute) ; a la baisse, les
+    # niveaux deja remplis gardent leur prix de vente d'origine (pas de vente
+    # a perte forcee), seuls les niveaux vides sont deplaces pour rester
+    # pertinents.
+    rebuild_breakout_pct: 15

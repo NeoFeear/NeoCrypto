@@ -269,6 +269,82 @@ def test_send_transaction_embed_has_no_float_values(monkeypatch):
     assert "50000" in fields_text  # price rendered as a formatted string, not repr(float)
 
 
+def test_send_transaction_amounts_are_labeled_with_the_quote_currency(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(
+        "discord_notifier._post_embed",
+        lambda url, embed: captured.update(embed=embed) or "1",
+    )
+
+    send_transaction("https://webhook", _trade(Side.BUY, None))
+
+    fields = {f["name"]: f["value"] for f in captured["embed"]["embeds"][0]["fields"]}
+    assert fields["Prix"] == "50000.00 USDT"
+    assert fields["Frais"] == "0.50 USDT"
+    assert fields["Solde apres"] == "499.50 USDT"
+
+
+def test_send_transaction_without_initial_cash_omits_capital_and_pct_fields(monkeypatch):
+    # Backward-compat: existing callers that don't have initial_cash handy
+    # keep getting a working embed, just without the extra context.
+    captured = {}
+    monkeypatch.setattr(
+        "discord_notifier._post_embed",
+        lambda url, embed: captured.update(embed=embed) or "1",
+    )
+
+    send_transaction("https://webhook", _trade(Side.SELL, Decimal("12.5")))
+
+    embed = captured["embed"]["embeds"][0]
+    field_names = [f["name"] for f in embed["fields"]]
+    assert "Capital de depart (paire)" not in field_names
+    assert "%" not in embed["title"]
+
+
+def test_send_transaction_with_initial_cash_shows_capital_reference_and_pct(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(
+        "discord_notifier._post_embed",
+        lambda url, embed: captured.update(embed=embed) or "1",
+    )
+
+    send_transaction("https://webhook", _trade(Side.SELL, Decimal("12.5")), initial_cash=Decimal("125"))
+
+    embed = captured["embed"]["embeds"][0]
+    fields = {f["name"]: f["value"] for f in embed["fields"]}
+    assert fields["Capital de depart (paire)"] == "125.00 USDT"
+    # 12.5 / 125 * 100 = +10.00%
+    assert "+10.00%" in fields["PnL realise"]
+    assert "+10.00%" in embed["title"]
+
+
+def test_send_transaction_loss_pct_is_negative(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(
+        "discord_notifier._post_embed",
+        lambda url, embed: captured.update(embed=embed) or "1",
+    )
+
+    send_transaction("https://webhook", _trade(Side.SELL, Decimal("-6.25")), initial_cash=Decimal("125"))
+
+    embed = captured["embed"]["embeds"][0]
+    assert "-5.00%" in embed["title"]
+
+
+def test_send_transaction_buy_shows_montant_as_pct_of_pair_capital(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(
+        "discord_notifier._post_embed",
+        lambda url, embed: captured.update(embed=embed) or "1",
+    )
+
+    send_transaction("https://webhook", _trade(Side.BUY, None), initial_cash=Decimal("125"))
+
+    fields = {f["name"]: f["value"] for f in captured["embed"]["embeds"][0]["fields"]}
+    # total_cost=500.5 / initial_cash=125 * 100 = 400.40%
+    assert "400.40%" in fields["Montant"]
+
+
 from discord_notifier import send_alert, send_log
 
 
@@ -313,22 +389,28 @@ def test_send_log_sends_plain_message(monkeypatch):
     assert "INFO" in embed["title"]
 
 
-from discord_notifier import send_daily_summary
+from discord_notifier import PairDailySummary, send_portfolio_daily_summary
+
+_ONE_PAIR = [
+    PairDailySummary(
+        symbol="BTCUSDT", total_value=Decimal("1050.25"),
+        return_pct_since_start=Decimal("5.025"), return_pct_24h=Decimal("1.5"),
+    ),
+]
 
 
-def test_send_daily_summary_posts_when_no_existing_message(monkeypatch):
+def test_send_portfolio_daily_summary_posts_when_no_existing_message(monkeypatch):
     monkeypatch.setattr("discord_notifier._post_embed", lambda url, embed: "555")
 
-    message_id = send_daily_summary(
-        "https://webhook", symbol="BTCUSDT", total_value=Decimal("1050.25"),
-        realized_pnl_cumule=Decimal("30.10"), unrealized_pnl=Decimal("20.15"),
-        return_pct=Decimal("5.025"), existing_message_id=None,
+    message_id = send_portfolio_daily_summary(
+        "https://webhook", pairs=_ONE_PAIR, total_value=Decimal("1050.25"), total_capital=Decimal("1000"),
+        return_pct=Decimal("5.025"), return_pct_24h=Decimal("1.5"), existing_message_id=None,
     )
 
     assert message_id == "555"
 
 
-def test_send_daily_summary_patches_when_existing_message(monkeypatch):
+def test_send_portfolio_daily_summary_patches_when_existing_message(monkeypatch):
     patch_calls = []
     monkeypatch.setattr(
         "discord_notifier._post_embed",
@@ -339,23 +421,136 @@ def test_send_daily_summary_patches_when_existing_message(monkeypatch):
         lambda url, message_id, embed: patch_calls.append(message_id) or True,
     )
 
-    message_id = send_daily_summary(
-        "https://webhook", symbol="BTCUSDT", total_value=Decimal("1050.25"),
-        realized_pnl_cumule=Decimal("30.10"), unrealized_pnl=Decimal("20.15"),
-        return_pct=Decimal("5.025"), existing_message_id="123",
+    message_id = send_portfolio_daily_summary(
+        "https://webhook", pairs=_ONE_PAIR, total_value=Decimal("1050.25"), total_capital=Decimal("1000"),
+        return_pct=Decimal("5.025"), return_pct_24h=Decimal("1.5"), existing_message_id="123",
     )
 
     assert message_id == "123"
     assert patch_calls == ["123"]
 
 
-def test_send_daily_summary_patch_failure_returns_none(monkeypatch):
+def test_send_portfolio_daily_summary_patch_failure_returns_none(monkeypatch):
     monkeypatch.setattr("discord_notifier._patch_embed", lambda url, message_id, embed: False)
 
-    message_id = send_daily_summary(
-        "https://webhook", symbol="BTCUSDT", total_value=Decimal("1050.25"),
-        realized_pnl_cumule=Decimal("30.10"), unrealized_pnl=Decimal("20.15"),
-        return_pct=Decimal("5.025"), existing_message_id="123",
+    message_id = send_portfolio_daily_summary(
+        "https://webhook", pairs=_ONE_PAIR, total_value=Decimal("1050.25"), total_capital=Decimal("1000"),
+        return_pct=Decimal("5.025"), return_pct_24h=Decimal("1.5"), existing_message_id="123",
     )
 
     assert message_id is None
+
+
+def test_send_portfolio_daily_summary_positive_return_is_green_with_up_trend_emoji(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(
+        "discord_notifier._post_embed",
+        lambda url, embed: captured.update(embed=embed) or "1",
+    )
+
+    send_portfolio_daily_summary(
+        "https://webhook", pairs=_ONE_PAIR, total_value=Decimal("1050.25"), total_capital=Decimal("1000"),
+        return_pct=Decimal("5.025"), return_pct_24h=Decimal("1.5"), existing_message_id=None,
+    )
+
+    embed = captured["embed"]["embeds"][0]
+    assert embed["color"] == 0x2ECC71
+    assert "\U0001F4C8" in embed["title"]
+    assert "+5.02%" in embed["title"]  # Decimal's default rounding is ROUND_HALF_EVEN: 5.025 -> 5.02
+
+
+def test_send_portfolio_daily_summary_negative_return_is_red_with_down_trend_emoji(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(
+        "discord_notifier._post_embed",
+        lambda url, embed: captured.update(embed=embed) or "1",
+    )
+
+    send_portfolio_daily_summary(
+        "https://webhook", pairs=_ONE_PAIR, total_value=Decimal("900"), total_capital=Decimal("1000"),
+        return_pct=Decimal("-10"), return_pct_24h=Decimal("-3"), existing_message_id=None,
+    )
+
+    embed = captured["embed"]["embeds"][0]
+    assert embed["color"] == 0xE74C3C
+    assert "\U0001F4C9" in embed["title"]
+    assert "-10.00%" in embed["title"]
+
+
+def test_send_portfolio_daily_summary_amounts_labeled_with_currency(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(
+        "discord_notifier._post_embed",
+        lambda url, embed: captured.update(embed=embed) or "1",
+    )
+
+    send_portfolio_daily_summary(
+        "https://webhook", pairs=_ONE_PAIR, total_value=Decimal("1050.25"), total_capital=Decimal("1000"),
+        return_pct=Decimal("5.025"), return_pct_24h=Decimal("1.5"), existing_message_id=None,
+    )
+
+    fields = {f["name"]: f["value"] for f in captured["embed"]["embeds"][0]["fields"]}
+    assert fields["Valeur totale du portefeuille"] == "1050.25 USDT"
+    assert fields["Capital de depart (total)"] == "1000.00 USDT"
+
+
+def test_send_portfolio_daily_summary_without_24h_history_shows_na(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(
+        "discord_notifier._post_embed",
+        lambda url, embed: captured.update(embed=embed) or "1",
+    )
+    pair_without_24h = [
+        PairDailySummary(
+            symbol="BTCUSDT", total_value=Decimal("1050.25"),
+            return_pct_since_start=Decimal("5.025"), return_pct_24h=None,
+        ),
+    ]
+
+    send_portfolio_daily_summary(
+        "https://webhook", pairs=pair_without_24h, total_value=Decimal("1050.25"), total_capital=Decimal("1000"),
+        return_pct=Decimal("5.025"), return_pct_24h=None, existing_message_id=None,
+    )
+
+    fields = {f["name"]: f["value"] for f in captured["embed"]["embeds"][0]["fields"]}
+    assert fields["Evolution 24h"] == "N/A (< 24h d'historique)"
+    assert "N/A" in fields["BTCUSDT"]
+
+
+def test_send_portfolio_daily_summary_has_one_field_per_pair(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(
+        "discord_notifier._post_embed",
+        lambda url, embed: captured.update(embed=embed) or "1",
+    )
+    pairs = [
+        PairDailySummary(
+            symbol="BTCUSDT", total_value=Decimal("130"),
+            return_pct_since_start=Decimal("4"), return_pct_24h=Decimal("1"),
+        ),
+        PairDailySummary(
+            symbol="ETHUSDT", total_value=Decimal("120"),
+            return_pct_since_start=Decimal("-4"), return_pct_24h=Decimal("-2"),
+        ),
+    ]
+
+    send_portfolio_daily_summary(
+        "https://webhook", pairs=pairs, total_value=Decimal("250"), total_capital=Decimal("250"),
+        return_pct=Decimal("0"), return_pct_24h=Decimal("-0.5"), existing_message_id=None,
+    )
+
+    fields = {f["name"]: f["value"] for f in captured["embed"]["embeds"][0]["fields"]}
+    assert fields["BTCUSDT"] == "Valeur: 130.00 USDT\n24h: +1.00%\nDepuis le debut: +4.00%"
+    assert fields["ETHUSDT"] == "Valeur: 120.00 USDT\n24h: -2.00%\nDepuis le debut: -4.00%"
+
+
+def test_send_alert_title_carries_severity_emoji(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(
+        "discord_notifier._post_embed",
+        lambda url, embed: captured.update(embed=embed) or "1",
+    )
+
+    send_alert("https://webhook", "api_error", "boom", severity="critical")
+
+    assert "\U0001F6A8" in captured["embed"]["embeds"][0]["title"]

@@ -2,7 +2,7 @@
 from decimal import Decimal
 from pathlib import Path
 
-from config import load_config
+from config import LivePair, load_config
 
 
 def test_load_config_parses_defaults(tmp_path: Path):
@@ -26,8 +26,12 @@ fees:
 live:
   poll_interval_seconds: 300
   poll_kline_interval: 5m
-  active_symbol: BTCUSDT
-  active_strategy: dca
+  total_capital: 1000
+  pairs:
+    - symbol: BTCUSDT
+      strategy: dca
+    - symbol: ETHUSDT
+      strategy: grid
 snapshots:
   retention_detail_days: 30
 discord:
@@ -64,8 +68,12 @@ strategy_defaults:
     assert cfg.fees.default_fee_pct == Decimal("0.001")
     assert cfg.live.poll_interval_seconds == 300
     assert cfg.live.poll_kline_interval == "5m"
-    assert cfg.live.active_symbol == "BTCUSDT"
-    assert cfg.live.active_strategy == "dca"
+    assert cfg.live.pairs == [
+        LivePair(symbol="BTCUSDT", strategy="dca"),
+        LivePair(symbol="ETHUSDT", strategy="grid"),
+    ]
+    assert cfg.live.total_capital == Decimal("1000")
+    assert cfg.live.capital_per_pair == Decimal("500")
     assert cfg.snapshots.retention_detail_days == 30
     assert cfg.strategy_defaults == {
         "buy_hold": {"invest_at": "start"},

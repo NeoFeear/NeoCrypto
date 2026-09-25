@@ -37,6 +37,8 @@ def test_dca_buys_every_frequency_hours_starting_at_index_zero():
 
 
 def test_dca_never_sells():
+    # No take_profit_pct/stop_loss_pct in params -- the default, spec'd
+    # DCA schema -- so pure accumulation, no exit ever fires.
     engine = FifoEngine(initial_cash=Decimal("1000"), fee_pct=Decimal("0.001"))
     klines = [_kline(0, "100"), _kline(3_600_000, "50")]
 
@@ -44,6 +46,74 @@ def test_dca_never_sells():
             params={"amount_per_buy": 50, "frequency_hours": 24, "reference_price": "close"})
 
     assert all(t.side.value == "BUY" for t in engine.trades)
+
+
+def test_dca_take_profit_sells_oldest_lot():
+    engine = FifoEngine(initial_cash=Decimal("1000"), fee_pct=Decimal("0.001"))
+    # frequency_hours=24 keeps this to a single buy, so the +15% move at
+    # candle 1 can only ever be the take-profit exit, never a second buy.
+    klines = [_kline(0, "100"), _kline(3_600_000, "115")]
+
+    run_dca(klines, engine, "BTCUSDT", params={
+        "amount_per_buy": 50, "frequency_hours": 24, "reference_price": "close",
+        "take_profit_pct": 10,
+    })
+
+    assert [t.side.value for t in engine.trades] == ["BUY", "SELL"]
+    sell = engine.trades[1]
+    assert sell.strategy_name == "dca_take_profit"
+    assert sell.quantity == Decimal("0.5")
+    assert sell.realized_pnl == Decimal("7.4425")
+    assert engine.get_lots("BTCUSDT") == []
+
+
+def test_dca_stop_loss_sells_oldest_lot():
+    engine = FifoEngine(initial_cash=Decimal("1000"), fee_pct=Decimal("0.001"))
+    klines = [_kline(0, "100"), _kline(3_600_000, "90")]  # -10%
+
+    run_dca(klines, engine, "BTCUSDT", params={
+        "amount_per_buy": 50, "frequency_hours": 24, "reference_price": "close",
+        "stop_loss_pct": 10,
+    })
+
+    assert [t.side.value for t in engine.trades] == ["BUY", "SELL"]
+    sell = engine.trades[1]
+    assert sell.strategy_name == "dca_stop_loss"
+    assert sell.realized_pnl == Decimal("-5.045")
+
+
+def test_dca_no_exit_when_price_move_is_within_thresholds():
+    engine = FifoEngine(initial_cash=Decimal("1000"), fee_pct=Decimal("0.001"))
+    klines = [_kline(0, "100"), _kline(3_600_000, "105")]  # +5%, under both thresholds
+
+    run_dca(klines, engine, "BTCUSDT", params={
+        "amount_per_buy": 50, "frequency_hours": 24, "reference_price": "close",
+        "take_profit_pct": 10, "stop_loss_pct": 10,
+    })
+
+    assert all(t.side.value == "BUY" for t in engine.trades)
+
+
+def test_dca_exit_only_evaluates_oldest_lot():
+    # FifoEngine.sell() always consumes oldest-first, so selling based on a
+    # non-oldest lot's own cost basis would realize PnL against the wrong lot.
+    # _check_exit must only ever look at lots[0].
+    engine = FifoEngine(initial_cash=Decimal("10000"), fee_pct=Decimal("0.001"))
+    state = DcaState()
+    no_exit_params = {"amount_per_buy": 50, "frequency_hours": 1, "reference_price": "close"}
+    step(state, _kline(0, "100"), engine, "BTCUSDT", no_exit_params)          # lot cost 100 (oldest)
+    step(state, _kline(3_600_000, "500"), engine, "BTCUSDT", no_exit_params)  # lot cost 500 (newest)
+    assert len(engine.get_lots("BTCUSDT")) == 2
+
+    # At price=110: oldest lot (cost 100) is at +10%, under the 50% thresholds.
+    # Newest lot (cost 500) is at -78%, which would blow through a 50%
+    # stop-loss if it were the one evaluated. Neither exit should fire.
+    step(state, _kline(7_200_000, "110"), engine, "BTCUSDT", {
+        **no_exit_params, "take_profit_pct": 50, "stop_loss_pct": 50,
+    })
+
+    assert all(t.side.value == "BUY" for t in engine.trades)
+    assert len(engine.get_lots("BTCUSDT")) == 3
 
 
 def test_dca_rejected_buy_is_logged_not_raised():

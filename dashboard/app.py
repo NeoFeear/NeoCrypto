@@ -16,6 +16,7 @@ from config import load_config
 from db.repository import list_snapshots, list_symbols_with_trades, list_trades
 from engine.fifo_engine import Trade
 from market_data.provider import INTERVAL_MS
+from sats import format_quantity
 
 app = FastAPI()
 
@@ -40,6 +41,7 @@ def _format_timestamp(ts_ms: int) -> str:
 # systemd unit running this from an unrelated WorkingDirectory=.
 templates = Jinja2Templates(directory=Path(__file__).parent / "templates")
 templates.env.filters["format_ts"] = _format_timestamp
+templates.env.filters["format_qty"] = format_quantity
 
 
 def get_conn() -> sqlite3.Connection:
@@ -59,11 +61,15 @@ def get_conn() -> sqlite3.Connection:
 
 
 def _active_symbol_default() -> str:
-    return load_config().live.active_symbol
+    return load_config().live.pairs[0].symbol
 
 
 def _initial_capital() -> Decimal:
-    return load_config().backtest.initial_capital
+    # The live portfolio's actual starting cash for the selected symbol --
+    # live.total_capital split equally across every configured pair -- not
+    # backtest.initial_capital (the full amount per symbol, used only by
+    # backtest.py's own comparative analysis).
+    return load_config().live.capital_per_pair
 
 
 def _read_backtest_report() -> list[dict]:

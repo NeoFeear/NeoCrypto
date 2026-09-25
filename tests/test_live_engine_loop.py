@@ -7,10 +7,11 @@ import pytest
 import db.repository
 from db.migrate import init_db
 from db.repository import insert_snapshot
+from config import LivePair
 from discord_notifier import DiscordWebhooks
 from engine.fifo_engine import FifoEngine
 from housekeeping import DAY_MS
-from live_engine import _check_daily_summary, reconstruct_engine_from_db, run_polling_loop
+from live_engine import _check_global_daily_summary, reconstruct_engine_from_db, run_polling_loop
 from market_data.provider import MarketDataProvider
 from market_data.types import Kline
 from models import PortfolioSnapshot
@@ -324,7 +325,10 @@ def test_run_polling_loop_reconciles_in_memory_engine_with_db_after_mid_sell_rol
 def test_run_polling_loop_sends_discord_notification_for_each_committed_trade(conn, monkeypatch):
     monkeypatch.setattr("live_engine.time.sleep", lambda s: None)
     sent = []
-    monkeypatch.setattr("live_engine.send_transaction", lambda webhook_url, trade: sent.append((webhook_url, trade)))
+    monkeypatch.setattr(
+        "live_engine.send_transaction",
+        lambda webhook_url, trade, **kwargs: sent.append((webhook_url, trade)),
+    )
     provider = SequenceProvider([_kline(0, "100")])
     engine = FifoEngine(initial_cash=Decimal("1000"), fee_pct=Decimal("0.001"))
     webhooks = DiscordWebhooks(daily_summary="", transactions="https://webhook/tx", alerts="", logs="")
@@ -395,11 +399,12 @@ def test_run_polling_loop_does_not_repeat_drawdown_alert_when_daily_summary_fail
     # Reproduces the exact bug the final review found: _check_drawdown_alert
     # used to send the alert BEFORE its "already alerted" flag was durably
     # committed (the actual commit happened later, in run_polling_loop, AFTER
-    # _check_daily_summary also ran). If _check_daily_summary raises in that
-    # same cycle -- e.g. because send_daily_summary itself blows up -- the
-    # except handler's conn.rollback() discarded the "already alerted" flag
-    # even though the alert had already been delivered to Discord, so the
-    # NEXT cycle re-read was_active=False and fired a duplicate alert.
+    # _check_global_daily_summary also ran). If _check_global_daily_summary
+    # raises in that same cycle -- e.g. because send_portfolio_daily_summary
+    # itself blows up -- the except handler's conn.rollback() discarded the
+    # "already alerted" flag even though the alert had already been delivered
+    # to Discord, so the NEXT cycle re-read was_active=False and fired a
+    # duplicate alert.
     #
     # This test FAILS against the pre-fix code (2 alerts: cycle 2 and cycle 3
     # both fire) and PASSES post-fix (1 alert: cycle 2 only), verified by
@@ -420,13 +425,13 @@ def test_run_polling_loop_does_not_repeat_drawdown_alert_when_daily_summary_fail
     # remaining processing failing.
     daily_summary_calls = {"n": 0}
 
-    def flaky_send_daily_summary(webhook_url, **kwargs):
+    def flaky_send_portfolio_daily_summary(webhook_url, **kwargs):
         daily_summary_calls["n"] += 1
         if daily_summary_calls["n"] == 1:
             return "999"
         raise RuntimeError("boom in daily summary")
 
-    monkeypatch.setattr("live_engine.send_daily_summary", flaky_send_daily_summary)
+    monkeypatch.setattr("live_engine.send_portfolio_daily_summary", flaky_send_portfolio_daily_summary)
 
     # Price crashes from 100 -> 85 (15% drop) and stays there, well past a
     # 10% threshold, then stays flat for a 3rd cycle -- same shape as the
@@ -441,6 +446,7 @@ def test_run_polling_loop_does_not_repeat_drawdown_alert_when_daily_summary_fail
         poll_interval="5m", poll_interval_seconds=300,
         on_critical_failure=failures.append, initial_cash=Decimal("1000"),
         max_cycles=3, discord_webhooks=webhooks, drawdown_threshold_pct=Decimal("10"),
+        summary_pairs=[LivePair(symbol="BTCUSDT", strategy="buy_hold")],
     )
 
     # Daily summary blew up on cycles 2 and 3 (both after the drawdown check
@@ -462,11 +468,11 @@ def test_run_polling_loop_sends_daily_summary_once_past_8h_paris_then_edits_on_n
 
     calls = []
 
-    def fake_send_daily_summary(webhook_url, **kwargs):
+    def fake_send_portfolio_daily_summary(webhook_url, **kwargs):
         calls.append(kwargs["existing_message_id"])
         return "999"
 
-    monkeypatch.setattr("live_engine.send_daily_summary", fake_send_daily_summary)
+    monkeypatch.setattr("live_engine.send_portfolio_daily_summary", fake_send_portfolio_daily_summary)
     provider = SequenceProvider([_kline(0, "100"), _kline(300_000, "100")])
     engine = FifoEngine(initial_cash=Decimal("1000"), fee_pct=Decimal("0.001"))
     webhooks = DiscordWebhooks(daily_summary="https://webhook/summary", transactions="", alerts="", logs="")
@@ -476,6 +482,7 @@ def test_run_polling_loop_sends_daily_summary_once_past_8h_paris_then_edits_on_n
         poll_interval="5m", poll_interval_seconds=300,
         on_critical_failure=lambda msg: None, initial_cash=Decimal("1000"),
         max_cycles=2, discord_webhooks=webhooks, drawdown_threshold_pct=Decimal("10"),
+        summary_pairs=[LivePair(symbol="BTCUSDT", strategy="buy_hold")],
     )
 
     # First cycle: no message yet for today -> POST (existing_message_id=None).
@@ -483,14 +490,20 @@ def test_run_polling_loop_sends_daily_summary_once_past_8h_paris_then_edits_on_n
     assert calls == [None, "999"]
 
 
-def test_run_polling_loop_sends_no_daily_summary_before_8h_paris(conn, monkeypatch):
+def test_run_polling_loop_sends_no_daily_summary_when_not_summary_leader(conn, monkeypatch):
+    # A pair-worker thread that is not the designated summary leader (see
+    # run_pair_worker) is called with summary_pairs=None -- it must never
+    # check/send the consolidated daily summary itself, or every pair's
+    # thread would race to post its own copy of the same global message.
     monkeypatch.setattr("live_engine.time.sleep", lambda s: None)
-    now_paris = datetime(2026, 1, 15, 7, 0, tzinfo=ZoneInfo("Europe/Paris"))
+    now_paris = datetime(2026, 1, 15, 9, 0, tzinfo=ZoneInfo("Europe/Paris"))
     now_ms = int(now_paris.timestamp() * 1000)
     monkeypatch.setattr("live_engine.time.time", lambda: now_ms / 1000)
 
     calls = []
-    monkeypatch.setattr("live_engine.send_daily_summary", lambda webhook_url, **kwargs: calls.append(1) or "999")
+    monkeypatch.setattr(
+        "live_engine.send_portfolio_daily_summary", lambda webhook_url, **kwargs: calls.append(1) or "999"
+    )
     provider = SequenceProvider([_kline(0, "100")])
     engine = FifoEngine(initial_cash=Decimal("1000"), fee_pct=Decimal("0.001"))
     webhooks = DiscordWebhooks(daily_summary="https://webhook/summary", transactions="", alerts="", logs="")
@@ -505,14 +518,40 @@ def test_run_polling_loop_sends_no_daily_summary_before_8h_paris(conn, monkeypat
     assert calls == []
 
 
-def test_check_daily_summary_commits_state_before_caller_could_roll_it_back(conn, monkeypatch):
-    # Reproduces the exact bug the final review found: _check_daily_summary used
-    # to write date_key/message_id_key with commit=False and rely on the CALLER
-    # (run_polling_loop) to commit later -- so a crash or exception anywhere else
-    # in that same cycle's remaining processing (rolled back by run_polling_loop's
-    # except handler) would discard the record of an already-successfully-sent
-    # Discord message. The NEXT cycle would then see no stored id for today and
-    # POST a second, orphaned message instead of correctly PATCHing the first one.
+def test_run_polling_loop_sends_no_daily_summary_before_8h_paris(conn, monkeypatch):
+    monkeypatch.setattr("live_engine.time.sleep", lambda s: None)
+    now_paris = datetime(2026, 1, 15, 7, 0, tzinfo=ZoneInfo("Europe/Paris"))
+    now_ms = int(now_paris.timestamp() * 1000)
+    monkeypatch.setattr("live_engine.time.time", lambda: now_ms / 1000)
+
+    calls = []
+    monkeypatch.setattr(
+        "live_engine.send_portfolio_daily_summary", lambda webhook_url, **kwargs: calls.append(1) or "999"
+    )
+    provider = SequenceProvider([_kline(0, "100")])
+    engine = FifoEngine(initial_cash=Decimal("1000"), fee_pct=Decimal("0.001"))
+    webhooks = DiscordWebhooks(daily_summary="https://webhook/summary", transactions="", alerts="", logs="")
+
+    run_polling_loop(
+        conn, provider, engine, "BTCUSDT", "buy_hold", {"invest_at": "start"},
+        poll_interval="5m", poll_interval_seconds=300,
+        on_critical_failure=lambda msg: None, initial_cash=Decimal("1000"),
+        max_cycles=1, discord_webhooks=webhooks, drawdown_threshold_pct=Decimal("10"),
+        summary_pairs=[LivePair(symbol="BTCUSDT", strategy="buy_hold")],
+    )
+
+    assert calls == []
+
+
+def test_check_global_daily_summary_commits_state_before_caller_could_roll_it_back(conn, monkeypatch):
+    # Reproduces the exact bug the final review found: _check_daily_summary (now
+    # _check_global_daily_summary) used to write date_key/message_id_key with
+    # commit=False and rely on the CALLER (run_polling_loop) to commit later --
+    # so a crash or exception anywhere else in that same cycle's remaining
+    # processing (rolled back by run_polling_loop's except handler) would
+    # discard the record of an already-successfully-sent Discord message. The
+    # NEXT cycle would then see no stored id for today and POST a second,
+    # orphaned message instead of correctly PATCHing the first one.
     #
     # This test FAILS against the pre-fix code (the state does not survive the
     # rollback, so the second call POSTs again instead of PATCHing) and PASSES
@@ -529,28 +568,103 @@ def test_check_daily_summary_commits_state_before_caller_could_roll_it_back(conn
 
     calls = []
 
-    def fake_send_daily_summary(webhook_url, **kwargs):
+    def fake_send_portfolio_daily_summary(webhook_url, **kwargs):
         calls.append(kwargs["existing_message_id"])
         return "999"
 
-    monkeypatch.setattr("live_engine.send_daily_summary", fake_send_daily_summary)
+    monkeypatch.setattr("live_engine.send_portfolio_daily_summary", fake_send_portfolio_daily_summary)
 
-    _check_daily_summary(conn, "BTCUSDT", "buy_hold", "https://webhook/summary", now_ms, Decimal("1000"))
+    pairs = [LivePair(symbol="BTCUSDT", strategy="buy_hold")]
+    _check_global_daily_summary(conn, pairs, "https://webhook/summary", now_ms, Decimal("1000"))
 
     # Simulate something else in this same cycle's remaining processing
     # raising, and run_polling_loop's except handler reacting the way it
     # really does: conn.rollback().
     conn.rollback()
 
-    date_key = "discord_daily_summary_date:BTCUSDT:buy_hold"
-    message_id_key = "discord_daily_summary_message_id:BTCUSDT:buy_hold"
+    date_key = "discord_daily_summary_date:global"
+    message_id_key = "discord_daily_summary_message_id:global"
     # Must survive the rollback -- these were committed INSIDE
-    # _check_daily_summary itself, not deferred to the caller.
+    # _check_global_daily_summary itself, not deferred to the caller.
     assert db.repository.get_engine_state(conn, date_key) == "2026-01-15"
     assert db.repository.get_engine_state(conn, message_id_key) == "999"
 
     # A second call for the same day must PATCH using the surviving stored
     # message id, never POST a duplicate.
-    _check_daily_summary(conn, "BTCUSDT", "buy_hold", "https://webhook/summary", now_ms, Decimal("1000"))
+    _check_global_daily_summary(conn, pairs, "https://webhook/summary", now_ms, Decimal("1000"))
 
     assert calls == [None, "999"]
+
+
+def test_check_global_daily_summary_aggregates_every_pair_into_one_message(conn, monkeypatch):
+    # Florian's request: ONE Discord message covering the whole portfolio
+    # (global evolution + every currency detailed), not 1 message per pair.
+    # BTCUSDT: 125 capital/pair -> 130 now (+4%), 128.70 24h ago (~+1.01%).
+    # ETHUSDT: 125 capital/pair -> 120 now (-4%), no snapshot 24h ago (N/A).
+    now_paris = datetime(2026, 1, 15, 9, 0, tzinfo=ZoneInfo("Europe/Paris"))
+    now_ms = int(now_paris.timestamp() * 1000)
+
+    insert_snapshot(conn, PortfolioSnapshot(
+        timestamp=now_ms - DAY_MS, symbol="BTCUSDT", cash_balance=Decimal("128.70"),
+        position_value=Decimal("0"), total_value=Decimal("128.70"),
+        unrealized_pnl=Decimal("0"), realized_pnl_cumule=Decimal("0"),
+    ))
+    insert_snapshot(conn, PortfolioSnapshot(
+        timestamp=now_ms - 60_000, symbol="BTCUSDT", cash_balance=Decimal("130"),
+        position_value=Decimal("0"), total_value=Decimal("130"),
+        unrealized_pnl=Decimal("0"), realized_pnl_cumule=Decimal("0"),
+    ))
+    insert_snapshot(conn, PortfolioSnapshot(
+        timestamp=now_ms - 60_000, symbol="ETHUSDT", cash_balance=Decimal("120"),
+        position_value=Decimal("0"), total_value=Decimal("120"),
+        unrealized_pnl=Decimal("0"), realized_pnl_cumule=Decimal("0"),
+    ))
+
+    captured = {}
+
+    def fake_send_portfolio_daily_summary(webhook_url, **kwargs):
+        captured.update(kwargs)
+        return "999"
+
+    monkeypatch.setattr("live_engine.send_portfolio_daily_summary", fake_send_portfolio_daily_summary)
+
+    pairs = [LivePair(symbol="BTCUSDT", strategy="dca"), LivePair(symbol="ETHUSDT", strategy="dca")]
+    _check_global_daily_summary(conn, pairs, "https://webhook/summary", now_ms, capital_per_pair=Decimal("125"))
+
+    # Global: 250 total capital (125 x 2 pairs), 250 total value now -> 0%.
+    assert captured["total_value"] == Decimal("250")
+    assert captured["total_capital"] == Decimal("250")
+    assert captured["return_pct"] == Decimal("0")
+    # Only BTCUSDT has 24h history -> global 24h delta is BTC-only: (130 - 128.70) / 128.70 * 100.
+    assert captured["return_pct_24h"] == (Decimal("130") - Decimal("128.70")) / Decimal("128.70") * Decimal(100)
+
+    rows = {row.symbol: row for row in captured["pairs"]}
+    assert rows["BTCUSDT"].total_value == Decimal("130")
+    assert rows["BTCUSDT"].return_pct_since_start == Decimal("4")
+    assert rows["BTCUSDT"].return_pct_24h == (Decimal("130") - Decimal("128.70")) / Decimal("128.70") * Decimal(100)
+    assert rows["ETHUSDT"].total_value == Decimal("120")
+    assert rows["ETHUSDT"].return_pct_since_start == Decimal("-4")
+    assert rows["ETHUSDT"].return_pct_24h is None
+
+
+def test_check_global_daily_summary_no_24h_history_for_any_pair_leaves_global_24h_none(conn, monkeypatch):
+    now_paris = datetime(2026, 1, 15, 9, 0, tzinfo=ZoneInfo("Europe/Paris"))
+    now_ms = int(now_paris.timestamp() * 1000)
+
+    insert_snapshot(conn, PortfolioSnapshot(
+        timestamp=now_ms - 60_000, symbol="BTCUSDT", cash_balance=Decimal("130"),
+        position_value=Decimal("0"), total_value=Decimal("130"),
+        unrealized_pnl=Decimal("0"), realized_pnl_cumule=Decimal("0"),
+    ))
+
+    captured = {}
+    monkeypatch.setattr(
+        "live_engine.send_portfolio_daily_summary",
+        lambda webhook_url, **kwargs: captured.update(kwargs) or "999",
+    )
+
+    pairs = [LivePair(symbol="BTCUSDT", strategy="dca")]
+    _check_global_daily_summary(conn, pairs, "https://webhook/summary", now_ms, capital_per_pair=Decimal("125"))
+
+    assert captured["return_pct_24h"] is None
+    assert captured["pairs"][0].return_pct_24h is None

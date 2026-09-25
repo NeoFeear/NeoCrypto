@@ -25,11 +25,27 @@ class FeesConfig:
 
 
 @dataclass(frozen=True)
+class LivePair:
+    symbol: str
+    strategy: str
+
+
+@dataclass(frozen=True)
 class LiveConfig:
     poll_interval_seconds: int
     poll_kline_interval: str
-    active_symbol: str
-    active_strategy: str
+    pairs: list[LivePair]
+    # Total live paper-trading budget, split EQUALLY across len(pairs) --
+    # separate from backtest.initial_capital, which stays the FULL amount
+    # per symbol for backtest.py's own comparative analysis (comparing
+    # strategies needs each one to start from the same capital, which is a
+    # different question from "how much real budget would this deployment
+    # actually use"). See LiveConfig.capital_per_pair.
+    total_capital: Decimal
+
+    @property
+    def capital_per_pair(self) -> Decimal:
+        return self.total_capital / Decimal(len(self.pairs))
 
 
 @dataclass(frozen=True)
@@ -81,8 +97,8 @@ def load_config(path: str | Path = "config.yaml") -> Config:
         live=LiveConfig(
             poll_interval_seconds=int(raw["live"]["poll_interval_seconds"]),
             poll_kline_interval=raw["live"]["poll_kline_interval"],
-            active_symbol=raw["live"]["active_symbol"],
-            active_strategy=raw["live"]["active_strategy"],
+            pairs=[LivePair(symbol=p["symbol"], strategy=p["strategy"]) for p in raw["live"]["pairs"]],
+            total_capital=Decimal(str(raw["live"]["total_capital"])),
         ),
         snapshots=SnapshotsConfig(
             retention_detail_days=int(raw["snapshots"]["retention_detail_days"])

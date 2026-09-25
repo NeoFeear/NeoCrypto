@@ -1,6 +1,7 @@
 import logging
 import signal
 import sqlite3
+import threading
 import time
 from datetime import datetime
 from decimal import Decimal
@@ -9,10 +10,13 @@ from zoneinfo import ZoneInfo
 
 import httpx
 
-from config import load_config
+from config import LivePair, load_config
 from db.migrate import init_db
 from db.repository import get_engine_state, insert_snapshot, insert_trade, replace_lots_for_symbol, set_engine_state
-from discord_notifier import DiscordWebhooks, load_discord_webhooks, send_alert, send_daily_summary, send_log, send_transaction
+from discord_notifier import (
+    DiscordWebhooks, PairDailySummary, load_discord_webhooks, send_alert, send_log,
+    send_portfolio_daily_summary, send_transaction,
+)
 from engine.fifo_engine import FifoEngine, Lot, Side, Trade
 from engine.strategies import base as strategy_base
 from engine.strategies.buy_hold import BuyHoldState, buy_hold_state_from_json, buy_hold_state_to_json
@@ -29,19 +33,24 @@ from market_data.types import Kline
 logger = logging.getLogger(__name__)
 
 
-def _raise_keyboard_interrupt(signum, frame) -> None:
-    """Maps SIGTERM (a `systemctl stop` under Plan 6's systemd unit) onto the
-    same graceful-shutdown path already used for SIGINT (Ctrl+C) in main() --
-    both should stop the polling loop identically, so there is exactly one
-    exit path to keep correct instead of two. Python's default SIGTERM
-    handling would otherwise terminate the process before any except/finally
-    block runs, skipping the shutdown send_log call and the DB connection
-    close in main()'s finally."""
-    raise KeyboardInterrupt()
+def _handle_shutdown_signal(signum, frame) -> None:
+    """SIGTERM (a `systemctl stop`) and SIGINT (Ctrl+C) both request the same
+    graceful shutdown. With several pair-worker threads running concurrently
+    (one per configured live.pairs entry), a raised exception only ever
+    reaches the thread that happened to receive the signal -- in CPython
+    that is always the main thread, never the workers -- so it cannot stop
+    them. Setting a shared threading.Event instead lets every worker's
+    run_polling_loop notice it on its own next cycle boundary and exit its
+    while loop cleanly, no exception required."""
+    _stop_event.set()
+
+
+_stop_event = threading.Event()
 
 
 def install_signal_handlers() -> None:
-    signal.signal(signal.SIGTERM, _raise_keyboard_interrupt)
+    signal.signal(signal.SIGTERM, _handle_shutdown_signal)
+    signal.signal(signal.SIGINT, _handle_shutdown_signal)
 
 
 _STATE_LOADERS = {
@@ -56,11 +65,16 @@ _STATE_DUMPERS = {
 }
 
 
-def _load_state(conn: sqlite3.Connection, symbol: str, strategy_type: str, params: dict):
+def _load_state(
+    conn: sqlite3.Connection, symbol: str, strategy_type: str, params: dict, current_price: Decimal | None = None,
+):
     key = f"strategy_state:{symbol}:{strategy_type}"
     raw = get_engine_state(conn, key)
     if strategy_type == "grid":
-        return grid_state_from_json(raw) if raw is not None else build_grid_state(params)
+        # current_price is only ever consulted when params has no explicit
+        # lower_bound/upper_bound (the auto-band config) -- see
+        # build_grid_state. Existing fixed-bound configs never need it.
+        return grid_state_from_json(raw) if raw is not None else build_grid_state(params, current_price)
     loader, factory = _STATE_LOADERS[strategy_type]
     return loader(raw) if raw is not None else factory()
 
@@ -114,13 +128,13 @@ def run_cycle(
 
     trades_before = len(engine.trades)
 
-    state = _load_state(conn, symbol, strategy_type, params)
+    state = _load_state(conn, symbol, strategy_type, params, current_price=k.close)
     if strategy_type == "buy_hold":
         buy_hold_step(state, k, engine, symbol, params)
     elif strategy_type == "dca":
         dca_step(state, k, engine, symbol, params)
     elif strategy_type == "grid":
-        step_grid_live(state, k.close, k.open_time_ms, engine, symbol, params)
+        step_grid_live(state, k.close, k.open_time_ms, engine, symbol, params, high=k.high, low=k.low)
     else:
         raise ValueError(f"strategie inconnue: {strategy_type}")
 
@@ -282,7 +296,7 @@ def _check_drawdown_alert(
     # Commit the state BEFORE sending -- send_alert cannot report success/
     # failure back to us, so there is nothing to gain by waiting until after
     # the HTTP call, and everything to lose: a crash or a later exception in
-    # this same cycle (e.g. _check_daily_summary raising) used to roll back
+    # this same cycle (e.g. _check_global_daily_summary raising) used to roll back
     # this flag via the caller's deferred commit, even though the alert had
     # already been delivered -- causing it to re-fire every subsequent
     # cycle. Committing first means a failure after this point can only
@@ -297,38 +311,87 @@ _PARIS_TZ = ZoneInfo("Europe/Paris")
 _DAILY_SUMMARY_HOUR = 8
 
 
-def _check_daily_summary(
-    conn: sqlite3.Connection, symbol: str, strategy_type: str, webhook_url: str,
-    now_ms: int, initial_cash: Decimal,
+def _check_global_daily_summary(
+    conn: sqlite3.Connection, pairs: list[LivePair], webhook_url: str,
+    now_ms: int, capital_per_pair: Decimal,
 ) -> None:
+    """Consolidated replacement for the old per-pair _check_daily_summary:
+    Florian asked for ONE Discord message covering the whole portfolio
+    (global evolution + every currency detailed) instead of 1 separate
+    message per live.pairs entry. Only the "leader" pair's worker thread
+    calls this (see run_pair_worker/run_polling_loop's summary_pairs param)
+    so exactly one thread ever evaluates it per cycle, even with several
+    pair-worker threads polling concurrently -- reusing the same date/
+    message-id engine_state pattern as before, just under a single global
+    key instead of one key per (symbol, strategy_type)."""
     now_paris = datetime.fromtimestamp(now_ms / 1000, tz=_PARIS_TZ)
     if now_paris.hour < _DAILY_SUMMARY_HOUR:
         return
     today_str = now_paris.date().isoformat()
 
-    date_key = f"discord_daily_summary_date:{symbol}:{strategy_type}"
-    message_id_key = f"discord_daily_summary_message_id:{symbol}:{strategy_type}"
+    date_key = "discord_daily_summary_date:global"
+    message_id_key = "discord_daily_summary_message_id:global"
 
     sent_date = get_engine_state(conn, date_key)
     existing_message_id = get_engine_state(conn, message_id_key) if sent_date == today_str else None
 
-    latest_snapshot = conn.execute(
-        "SELECT * FROM portfolio_snapshots WHERE symbol = ? ORDER BY id DESC LIMIT 1", (symbol,)
-    ).fetchone()
-    if latest_snapshot is None:
-        return
+    cutoff_24h_ms = now_ms - DAY_MS
+    rows: list[PairDailySummary] = []
+    rows_with_24h_history: list[tuple[Decimal, Decimal]] = []  # (value_now, value_24h_ago)
+    for pair in pairs:
+        latest_snapshot = conn.execute(
+            "SELECT * FROM portfolio_snapshots WHERE symbol = ? ORDER BY id DESC LIMIT 1", (pair.symbol,)
+        ).fetchone()
+        if latest_snapshot is None:
+            continue
 
-    total_value = Decimal(latest_snapshot["total_value"])
-    realized_pnl_cumule = Decimal(latest_snapshot["realized_pnl_cumule"])
-    unrealized_pnl = Decimal(latest_snapshot["unrealized_pnl"])
-    return_pct = ((total_value - initial_cash) / initial_cash * Decimal(100)) if initial_cash > 0 else Decimal(0)
+        total_value = Decimal(latest_snapshot["total_value"])
+        return_pct_since_start = (
+            (total_value - capital_per_pair) / capital_per_pair * Decimal(100) if capital_per_pair > 0 else Decimal(0)
+        )
 
-    new_message_id = send_daily_summary(
-        webhook_url, symbol=symbol, total_value=total_value, realized_pnl_cumule=realized_pnl_cumule,
-        unrealized_pnl=unrealized_pnl, return_pct=return_pct, existing_message_id=existing_message_id,
+        snapshot_24h_ago = conn.execute(
+            "SELECT total_value FROM portfolio_snapshots WHERE symbol = ? AND timestamp <= ? "
+            "ORDER BY timestamp DESC LIMIT 1",
+            (pair.symbol, cutoff_24h_ms),
+        ).fetchone()
+        return_pct_24h = None
+        if snapshot_24h_ago is not None:
+            value_24h_ago = Decimal(snapshot_24h_ago["total_value"])
+            if value_24h_ago > 0:
+                return_pct_24h = (total_value - value_24h_ago) / value_24h_ago * Decimal(100)
+                rows_with_24h_history.append((total_value, value_24h_ago))
+
+        rows.append(PairDailySummary(
+            symbol=pair.symbol, total_value=total_value,
+            return_pct_since_start=return_pct_since_start, return_pct_24h=return_pct_24h,
+        ))
+
+    if not rows:
+        return  # no pair has any snapshot history yet -- nothing to summarize
+
+    portfolio_total_value = sum((row.total_value for row in rows), Decimal(0))
+    total_capital = capital_per_pair * Decimal(len(pairs))
+    return_pct = (
+        (portfolio_total_value - total_capital) / total_capital * Decimal(100) if total_capital > 0 else Decimal(0)
+    )
+
+    return_pct_24h = None
+    if rows_with_24h_history:
+        # Only pairs with their own 24h-old snapshot contribute to either side of
+        # this ratio -- mixing in a pair's current value without its matching
+        # past value would skew the global 24h delta, not just omit that pair.
+        current_sum = sum((now for now, _ in rows_with_24h_history), Decimal(0))
+        past_sum = sum((past for _, past in rows_with_24h_history), Decimal(0))
+        if past_sum > 0:
+            return_pct_24h = (current_sum - past_sum) / past_sum * Decimal(100)
+
+    new_message_id = send_portfolio_daily_summary(
+        webhook_url, pairs=rows, total_value=portfolio_total_value, total_capital=total_capital,
+        return_pct=return_pct, return_pct_24h=return_pct_24h, existing_message_id=existing_message_id,
     )
     if new_message_id is not None:
-        # Commit immediately, not deferred to the caller: send_daily_summary's
+        # Commit immediately, not deferred to the caller: send_portfolio_daily_summary's
         # HTTP call already happened above, so a crash or exception between
         # here and the caller's own later commit would leave a real Discord
         # message with no durable record of it -- causing the next cycle to
@@ -355,20 +418,22 @@ def run_polling_loop(
     drawdown_threshold_pct: Decimal,
     max_cycles: int | None = None,
     retention_days: int | None = None,
+    stop_event: threading.Event | None = None,
+    summary_pairs: list[LivePair] | None = None,
 ) -> None:
     # Owned here, for the lifetime of this process: see Task 6's interface notes
     # on why trade_id_map is never persisted to the DB.
     trade_id_map: dict[int, int] = {}
     cycles = 0
     last_housekeeping_day: int | None = None
-    while max_cycles is None or cycles < max_cycles:
+    while (max_cycles is None or cycles < max_cycles) and (stop_event is None or not stop_event.is_set()):
         try:
             committed_trades = run_cycle(
                 conn, provider, engine, symbol, strategy_type, params, poll_interval, trade_id_map,
                 fetch_fn=lambda: fetch_with_retry(provider, symbol, poll_interval, on_critical_failure),
             )
             for trade in committed_trades:
-                send_transaction(discord_webhooks.transactions, trade)
+                send_transaction(discord_webhooks.transactions, trade, initial_cash=initial_cash)
 
             latest_snapshot = conn.execute(
                 "SELECT total_value FROM portfolio_snapshots WHERE symbol = ? ORDER BY id DESC LIMIT 1",
@@ -379,10 +444,16 @@ def run_polling_loop(
                     conn, symbol, strategy_type, Decimal(latest_snapshot["total_value"]),
                     drawdown_threshold_pct, discord_webhooks.alerts,
                 )
-                _check_daily_summary(
-                    conn, symbol, strategy_type, discord_webhooks.daily_summary,
-                    int(time.time() * 1000), initial_cash,
-                )
+                if summary_pairs is not None:
+                    # Only the "leader" pair-worker thread is ever given
+                    # summary_pairs (see run_pair_worker) -- capital_per_pair
+                    # is the same for every pair (total_capital split
+                    # equally), so this thread's own initial_cash doubles as
+                    # that shared per-pair figure.
+                    _check_global_daily_summary(
+                        conn, summary_pairs, discord_webhooks.daily_summary,
+                        int(time.time() * 1000), initial_cash,
+                    )
                 conn.commit()
 
             if retention_days is not None:
@@ -426,25 +497,40 @@ def run_polling_loop(
 
         cycles += 1
         if max_cycles is None or cycles < max_cycles:
-            time.sleep(poll_interval_seconds)
+            if stop_event is not None:
+                # Interruptible wait: returns True (and stops looping) the
+                # instant a shutdown is requested, instead of blocking the
+                # full poll_interval_seconds like a plain sleep would.
+                if stop_event.wait(poll_interval_seconds):
+                    break
+            else:
+                time.sleep(poll_interval_seconds)
 
 
-def main() -> None:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-    install_signal_handlers()
-    cfg = load_config()
+def run_pair_worker(
+    cfg, pair: LivePair, discord_webhooks: DiscordWebhooks, stop_event: threading.Event,
+) -> None:
+    """One (symbol, strategy) pair's full live-trading lifecycle, run in its
+    own thread with its own provider and its own DB connection (SQLite
+    connections are not shared across threads). Each pair's portfolio is
+    fully independent -- see reconstruct_engine_from_db, which reconstructs
+    cash/lots by filtering the shared trades/lots tables on this pair's own
+    symbol -- so pairs never interfere with each other's capital."""
     provider = build_provider(cfg.data_source)
     conn = init_db(cfg.db_path)
-    discord_webhooks = load_discord_webhooks()
-
-    symbol = cfg.live.active_symbol
-    strategy_type = cfg.live.active_strategy
+    symbol = pair.symbol
+    strategy_type = pair.strategy
     params = cfg.strategy_defaults[strategy_type]
+    # live.total_capital split equally across every configured pair -- e.g.
+    # 1000 total / 8 pairs = 125 each -- NOT cfg.backtest.initial_capital
+    # (which stays the full amount per symbol, on purpose, for backtest.py's
+    # own comparative analysis; see LiveConfig.capital_per_pair).
+    initial_cash = cfg.live.capital_per_pair
 
     # Rebuilds cash_balance + open lots from the DB (Task 6) so a restart
     # genuinely resumes the portfolio, not just each strategy's own state.
     engine = reconstruct_engine_from_db(
-        conn, symbol, initial_cash=cfg.backtest.initial_capital, fee_pct=cfg.fees.default_fee_pct
+        conn, symbol, initial_cash=initial_cash, fee_pct=cfg.fees.default_fee_pct
     )
 
     def on_critical_failure(message: str) -> None:
@@ -454,6 +540,13 @@ def main() -> None:
     logger.info("Demarrage du moteur live: %s / %s", symbol, strategy_type)
     send_log(discord_webhooks.logs, f"Moteur live demarre pour {symbol}/{strategy_type}.", level="INFO")
 
+    # Exactly one pair-worker thread (the first one configured, e.g. BTCUSDT/dca)
+    # is the "leader" that checks/sends the consolidated daily summary covering
+    # every pair -- picking one designated thread rather than having every
+    # worker independently check is what keeps this to 1 Discord message a day
+    # instead of racing len(cfg.live.pairs) threads into duplicate posts.
+    is_summary_leader = pair == cfg.live.pairs[0]
+
     try:
         run_polling_loop(
             conn, provider, engine, symbol, strategy_type, params,
@@ -461,23 +554,63 @@ def main() -> None:
             poll_interval_seconds=cfg.live.poll_interval_seconds,
             on_critical_failure=on_critical_failure,
             retention_days=cfg.snapshots.retention_detail_days,
-            initial_cash=cfg.backtest.initial_capital,
+            initial_cash=initial_cash,
             discord_webhooks=discord_webhooks,
             drawdown_threshold_pct=cfg.discord.alert_drawdown_threshold_pct,
+            stop_event=stop_event,
+            summary_pairs=cfg.live.pairs if is_summary_leader else None,
         )
-    except KeyboardInterrupt:
-        logger.info("Arret demande.")
-        send_log(discord_webhooks.logs, f"Moteur live arrete pour {symbol}/{strategy_type}.", level="INFO")
     except Exception as e:
+        # run_cycle's own try/except inside the polling loop already absorbs
+        # per-cycle failures -- reaching here means something broke outside
+        # that (e.g. a bug in run_polling_loop itself), genuinely unexpected
+        # for this one pair. Logged and alerted, but never re-raised: one
+        # pair's worker thread dying must not take down the others.
         logger.exception("Arret inattendu du moteur live pour %s/%s.", symbol, strategy_type)
         send_alert(
             discord_webhooks.alerts, "service_down",
             f"Le moteur live pour {symbol}/{strategy_type} s'est arrete de facon inattendue: {e}",
             severity="critical",
         )
-        raise
     finally:
+        send_log(discord_webhooks.logs, f"Moteur live arrete pour {symbol}/{strategy_type}.", level="INFO")
         conn.close()
+
+
+def main() -> None:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    install_signal_handlers()
+    cfg = load_config()
+    discord_webhooks = load_discord_webhooks()
+
+    logger.info("Demarrage du moteur live sur %d paire(s): %s", len(cfg.live.pairs),
+                ", ".join(f"{p.symbol}/{p.strategy}" for p in cfg.live.pairs))
+
+    threads = [
+        threading.Thread(
+            target=run_pair_worker, args=(cfg, pair, discord_webhooks, _stop_event),
+            name=f"{pair.symbol}-{pair.strategy}",
+        )
+        for pair in cfg.live.pairs
+    ]
+    for t in threads:
+        t.start()
+
+    try:
+        # install_signal_handlers routes both SIGTERM and SIGINT to
+        # _stop_event instead of raising, so a plain t.join() per thread
+        # (rather than a busy-poll) is enough: each worker's run_polling_loop
+        # notices _stop_event on its own and returns, which unblocks join().
+        for t in threads:
+            t.join()
+    except KeyboardInterrupt:
+        # Defensive fallback only -- normally unreachable, since SIGINT is
+        # handled above and never raises here. Covers the unlikely case of a
+        # signal handler failing to install.
+        logger.info("Arret demande.")
+        _stop_event.set()
+        for t in threads:
+            t.join()
 
 
 if __name__ == "__main__":
