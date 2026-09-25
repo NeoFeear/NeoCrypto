@@ -116,8 +116,13 @@ class FifoEngine:
         return trade
 
     def sell(
-        self, timestamp: int, symbol: str, price: Decimal, quantity: Decimal, strategy_name: str
+        self, timestamp: int, symbol: str, price: Decimal, quantity: Decimal, strategy_name: str,
+        lot_price: Decimal | None = None,
     ) -> Trade | None:
+        """FIFO by default. With lot_price, sells from the lot bought at exactly
+        that price instead (a grid level selling what it bought -- see
+        engine/strategies/grid.py); falls back to FIFO when no such lot holds
+        enough, e.g. a level restored from before targeted sells existed."""
         symbol_lots = self.get_lots(symbol)
         available = sum((lot.quantity_restante for lot in symbol_lots), Decimal("0"))
 
@@ -129,9 +134,19 @@ class FifoEngine:
             )
             return None
 
+        sources = symbol_lots
+        if lot_price is not None:
+            matching = [lot for lot in symbol_lots if lot.prix_achat == lot_price and lot.quantity_restante >= quantity]
+            exact = [lot for lot in matching if lot.quantity_restante == quantity]
+            target = (exact or matching or [None])[0]
+            if target is not None:
+                sources = [target]
+            else:
+                logger.info("Vente ciblee: aucun lot a %s pour %s, repli FIFO.", lot_price, symbol)
+
         remaining = quantity
         realized_pnl = Decimal("0")
-        for lot in symbol_lots:
+        for lot in sources:
             if remaining <= 0:
                 break
             take = min(lot.quantity_restante, remaining)

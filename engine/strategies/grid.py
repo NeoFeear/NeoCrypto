@@ -107,7 +107,8 @@ def run_grid(klines: list[Kline], engine: FifoEngine, symbol: str, params: dict)
 
         for lvl in levels:
             if lvl not in just_filled and lvl.state == "FILLED" and lvl.sell_price >= k.low and lvl.sell_price <= k.high:
-                trade = engine.sell(k.open_time_ms, symbol, lvl.sell_price, lvl.filled_quantity, "grid")
+                trade = engine.sell(k.open_time_ms, symbol, lvl.sell_price, lvl.filled_quantity, "grid",
+                                    lot_price=lvl.buy_price)
                 if trade is not None:
                     lvl.state = "EMPTY"
                     lvl.filled_quantity = None
@@ -201,10 +202,25 @@ def step_grid_live(
     that sizes each re-range's new band to the symbol's actual recent
     volatility instead of a fixed percentage."""
     order_size_quote = Decimal(str(params["order_size_quote"]))
+    # "range" (review 2026-09-25): a resting level fills when the closed
+    # candle's [low, high] touches it -- the backtest's own rule, so live and
+    # backtest measure the same execution model and wicks are no longer
+    # missed. "cross" keeps the original close-to-close crossing. Either way a
+    # level only ever sees candles AFTER it existed (prev_price is None on a
+    # brand-new grid) and never round-trips inside one candle.
+    use_range = params.get("fill_model", "cross") == "range" and high is not None and low is not None
 
     if state.prev_price is not None:
+        if use_range:
+            buy_hit = lambda lvl: low <= lvl.buy_price <= high  # noqa: E731
+            sell_hit = lambda lvl: low <= lvl.sell_price <= high  # noqa: E731
+        else:
+            buy_hit = lambda lvl: state.prev_price > lvl.buy_price >= current_price  # noqa: E731
+            sell_hit = lambda lvl: state.prev_price < lvl.sell_price <= current_price  # noqa: E731
+
+        just_filled = []
         buy_candidates = sorted(
-            (lvl for lvl in state.levels if lvl.state == "EMPTY" and state.prev_price > lvl.buy_price >= current_price),
+            (lvl for lvl in state.levels if lvl.state == "EMPTY" and buy_hit(lvl)),
             key=lambda lvl: lvl.buy_price,
         )
         for lvl in buy_candidates:
@@ -213,10 +229,12 @@ def step_grid_live(
             if trade is not None:
                 lvl.state = "FILLED"
                 lvl.filled_quantity = quantity
+                just_filled.append(lvl)
 
         for lvl in state.levels:
-            if lvl.state == "FILLED" and state.prev_price < lvl.sell_price <= current_price:
-                trade = engine.sell(timestamp, symbol, lvl.sell_price, lvl.filled_quantity, "grid")
+            if lvl.state == "FILLED" and lvl not in just_filled and sell_hit(lvl):
+                trade = engine.sell(timestamp, symbol, lvl.sell_price, lvl.filled_quantity, "grid",
+                                    lot_price=lvl.buy_price)
                 if trade is not None:
                     lvl.state = "EMPTY"
                     lvl.filled_quantity = None

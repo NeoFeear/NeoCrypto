@@ -26,12 +26,44 @@ journee (pas en positif), puis reintegres le jour meme a la demande de Florian. 
 (`engine_state`/`lots`, keye par `symbol:strategy`) a repris exactement ou il s'etait
 arrete — aucune perte d'historique.
 
-**Note de synchronisation :** le `config.yaml` (et la logique associee — RSI/ATR
-adaptatifs pour `dca`, grille Fibonacci auto-adaptative pour `grid`, plusieurs paires en
-parallele) a evolue directement sur CT303 depuis le dernier commit pousse sur ce depot ;
-le `config.yaml` versionne ici reflete encore la version mono-symbole du Plan 6. A
-resynchroniser explicitement avant de se fier au depot comme source de verite pour le
-comportement live actuel.
+**Source de verite :** depuis le 2026-09-25, ce depot contient exactement ce qui tourne sur
+CT303 (import du code et de la config de production, puis corrections de la revue). Regle :
+**ne plus jamais modifier `/opt/crypto-sim` directement** -- commiter ici, puis
+`bash deploy/deploy-to-ct303.sh` (deploie `HEAD`, garde une sauvegarde, lance les tests
+dans le conteneur et ne redemarre que s'ils passent). `DEPLOYED_REVISION` sur CT303 donne le
+commit en service.
+
+### Modele d'execution
+
+- **Grille** : chaque palier revend *son propre lot* (meme prix d'achat, meme quantite), plus
+  le lot le plus ancien -- taux de reussite, facteur de profit et esperance sont donc justes
+  par palier. Le DCA reste en FIFO. Les paliers remplis avant ce changement retombent sur le
+  FIFO a leur prochaine vente.
+- **Live = backtest** (`strategy_defaults.grid.fill_model: range`) : un palier est execute
+  quand le [plus bas, plus haut] de la bougie 5 min cloturee le touche, comme dans le
+  backtest ; jamais d'aller-retour dans une meme bougie, jamais sur la bougie qui a servi a
+  construire la grille. `cross` = ancien modele cloture a cloture.
+- **Ecart restant avec le reel** (volontaire, simulateur papier) : un prix touche est
+  considere execute en totalite (pas de file d'attente ni d'execution partielle), frais
+  fixes 0,1 %, pas de rejet d'exchange ni de coupure de flux simulee. Les chiffres disent
+  comment une strategie se comporte sur le marche, pas ce qu'elle rapporterait en reel.
+- **Capital de reference** : le rendement d'une paire est mesure contre le cash avec lequel
+  elle a reellement demarre (deduit de son premier trade), meme si `live.pairs` a change de
+  taille depuis. Ex. : 8 paires ont demarre a 1000/8 = 125, ZEC a 1000/9 = 111,11 -- capital
+  engage total 1111,11.
+
+### Juger une strategie
+
+Un DCA qui achete dans une baisse est en latent negatif *par construction* : sur quelques
+jours, son resultat n'est que du bruit de marche. Le juger sur des mois, contre un achat
+unique fait au meme moment avec le meme capital (`python backtest.py` donne l'alpha contre
+buy & hold), jamais sur la couleur du latent d'une semaine.
+
+### Dashboard
+
+Ecoute sur `0.0.0.0` sans authentification par defaut (LAN uniquement). Avant toute
+exposition hors LAN, renseigner `DASHBOARD_USER` et `DASHBOARD_PASSWORD` dans `.env` :
+l'authentification HTTP Basic s'active automatiquement.
 
 Lancer le backtest : `python backtest.py`
 Lancer le moteur live : `python live_engine.py` (tourne indefiniment, Ctrl+C ou SIGTERM pour arreter proprement)
@@ -73,8 +105,9 @@ Lancer le dashboard : `python -m dashboard.app` (port configurable dans `config.
 6. Entree Homepage (CT104) : **non faite** — CT104 est volontairement arrete ("homepage ne me sert
    pas"), pas un oubli.
 
-Mise a jour du code : refaire l'etape 2 (ou `git pull` une fois `origin` a jour), puis
-`pct exec 303 -- systemctl restart crypto-sim.service crypto-sim-dashboard.service`.
+Mise a jour du code : `bash deploy/deploy-to-ct303.sh` depuis la racine du depot (commit
+d'abord ; seul `HEAD` est deploye). Les etapes 2 et 3 ci-dessus ne servent qu'a la toute
+premiere installation.
 
 ## Développement
 

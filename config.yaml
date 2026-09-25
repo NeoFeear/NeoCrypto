@@ -115,6 +115,12 @@ strategy_defaults:
     # les utilise aussi via ce meme fichier de config).
     spacing: fibonacci
     order_size_quote: 100
+    # Modele d'execution live (revue du 2026-09-25) : "range" = un palier est
+    # execute quand le [plus bas, plus haut] de la bougie 5 min cloturee le
+    # touche -- exactement la regle du backtest, donc live et backtest sont
+    # comparables et les meches ne sont plus ratees. "cross" = ancien modele
+    # (croisement cloture a cloture, pessimiste).
+    fill_model: range
     # -- grid auto-adaptatif (additive) --
     # Pas de lower_bound/upper_bound fixes : au demarrage, les bornes sont
     # calculees automatiquement a +/- band_pct autour du prix courant.

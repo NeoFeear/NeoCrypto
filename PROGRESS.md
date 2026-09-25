@@ -426,3 +426,25 @@ correctif de version de template pendant l'exécution de Task 6).
 vers `origin` (GitHub `NeoFeear/NeoCrypto`), conformément à l'instruction
 explicite de Florian ("push et commit quand t'auras tout fini"), confirmée
 via question directe pendant cette session.
+
+## 2026-09-25 — Revue externe « Revue NeoCrypto » appliquee + incidents live
+
+- **Depot = production** : import du code et de la config qui tournaient sur CT303
+  (commit `sync:`), puis deploiement uniquement via `deploy/deploy-to-ct303.sh` (HEAD,
+  sauvegarde, tests dans le conteneur, redemarrage seulement si vert).
+- **CRITIQUE (revue) — grille appariee au lot de son palier** : `FifoEngine.sell(...,
+  lot_price=)` vend le lot achete par le palier ; le cas 33 000 -> 34 000 de la revue
+  enregistre +2,93 $ au lieu de -0,0139 $. DCA inchange (FIFO). Repli FIFO pour les
+  paliers remplis avant le correctif.
+- **MODERE (revue) — live = backtest** : `fill_model: range` (plus bas/plus haut de la
+  bougie 5 min), garde-fous : pas d'aller-retour intra-bougie, pas d'execution sur la
+  bougie de construction de la grille.
+- **Capital de reference** : rendements mesures contre le cash de depart reel de chaque
+  paire (`starting_capital`) ; les rapports affichaient +16,5 % pour un reel de +4,8 %.
+- **Incident Discord** : un 429 a `Retry-After: 1992` endormait un thread de paire 33 min ;
+  envoi en arriere-plan (file, cadence par webhook, reessais reseau), un seul message
+  demarrage/arret, plafond d'attente en ligne de 15 s.
+- **Securite** : les URL de webhooks ne sont plus ecrites dans journald (logs httpx) ;
+  authentification HTTP Basic optionnelle du dashboard (`DASHBOARD_USER`/`PASSWORD`).
+- Dashboard : chiffres a 2 decimales. Journaux : rejets identiques masques 6 h.
+- 309 tests (235 au Plan 6 -> 289 a l'import de CT303 -> 309).

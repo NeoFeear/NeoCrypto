@@ -21,6 +21,38 @@ from sats import format_quantity
 app = FastAPI()
 
 
+def _dashboard_credentials() -> tuple[str, str] | None:
+    """DASHBOARD_USER / DASHBOARD_PASSWORD from .env (or the environment).
+    Unset = no auth, the LAN-only default; set both before ever exposing
+    the dashboard beyond the LAN (it binds 0.0.0.0)."""
+    import os
+    from dotenv import dotenv_values
+    values = {**dotenv_values(".env"), **os.environ}
+    user, password = values.get("DASHBOARD_USER"), values.get("DASHBOARD_PASSWORD")
+    return (user, password) if user and password else None
+
+
+@app.middleware("http")
+async def _basic_auth(request, call_next):
+    creds = _dashboard_credentials()
+    if creds is not None:
+        import base64
+        import secrets
+        from fastapi.responses import Response
+        ok = False
+        header = request.headers.get("authorization", "")
+        if header.startswith("Basic "):
+            try:
+                user, _, password = base64.b64decode(header[6:]).decode("utf-8").partition(":")
+                ok = secrets.compare_digest(user, creds[0]) and secrets.compare_digest(password, creds[1])
+            except Exception:
+                ok = False
+        if not ok:
+            return Response("Authentification requise.", status_code=401,
+                            headers={"WWW-Authenticate": 'Basic realm="crypto-sim", charset="UTF-8"'})
+    return await call_next(request)
+
+
 @app.exception_handler(sqlite3.OperationalError)
 def _database_not_available(request: Request, exc: sqlite3.OperationalError) -> PlainTextResponse:
     return PlainTextResponse(
