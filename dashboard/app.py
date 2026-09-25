@@ -13,7 +13,7 @@ from fastapi.templating import Jinja2Templates
 
 import analytics
 from config import load_config
-from db.repository import list_snapshots, list_symbols_with_trades, list_trades
+from db.repository import list_snapshots, list_symbols_with_trades, list_trades, starting_capital
 from engine.fifo_engine import Trade
 from market_data.provider import INTERVAL_MS
 from sats import format_quantity
@@ -64,12 +64,13 @@ def _active_symbol_default() -> str:
     return load_config().live.pairs[0].symbol
 
 
-def _initial_capital() -> Decimal:
-    # The live portfolio's actual starting cash for the selected symbol --
-    # live.total_capital split equally across every configured pair -- not
-    # backtest.initial_capital (the full amount per symbol, used only by
-    # backtest.py's own comparative analysis).
-    return load_config().live.capital_per_pair
+def _initial_capital(conn: sqlite3.Connection, symbol: str) -> Decimal:
+    # The live portfolio's actual starting cash for the selected symbol: what
+    # its first trade shows it started with (see db.repository.starting_capital),
+    # falling back to live.total_capital split equally across the configured
+    # pairs -- never backtest.initial_capital (the full amount per symbol, used
+    # only by backtest.py's own comparative analysis).
+    return starting_capital(conn, symbol, load_config().live.capital_per_pair)
 
 
 def _read_backtest_report() -> list[dict]:
@@ -86,7 +87,7 @@ def index(request: Request, symbol: str | None = None) -> HTMLResponse:
     active_symbol = symbol or _active_symbol_default()
     symbols = list_symbols_with_trades(conn) or [active_symbol]
     snapshots = list_snapshots(conn, active_symbol)
-    initial_capital = _initial_capital()
+    initial_capital = _initial_capital(conn, active_symbol)
 
     if snapshots:
         latest = snapshots[-1]
@@ -127,7 +128,7 @@ def analyses(request: Request, symbol: str | None = None) -> HTMLResponse:
     if snapshots:
         periods_per_year = (365 * 24 * 3_600_000) // INTERVAL_MS[_poll_interval_default()]
         days = max(1, (snapshots[-1].timestamp - snapshots[0].timestamp) // 86_400_000)
-        initial_capital = _initial_capital()
+        initial_capital = _initial_capital(conn, active_symbol)
         cagr = (analytics.cagr_pct(initial_capital, snapshots[-1].total_value, days)
                 if initial_capital > 0 else Decimal(0))
         max_dd, recovery_days = analytics.max_drawdown(snapshots)

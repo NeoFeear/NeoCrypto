@@ -12,7 +12,9 @@ import httpx
 
 from config import LivePair, load_config
 from db.migrate import init_db
-from db.repository import get_engine_state, insert_snapshot, insert_trade, replace_lots_for_symbol, set_engine_state
+from db.repository import (
+    get_engine_state, insert_snapshot, insert_trade, replace_lots_for_symbol, set_engine_state, starting_capital,
+)
 from logutil import RepeatFilter
 from discord_notifier import (
     DiscordWebhooks, PairDailySummary, load_discord_webhooks, send_alert, send_log,
@@ -338,6 +340,7 @@ def _check_global_daily_summary(
 
     cutoff_24h_ms = now_ms - DAY_MS
     rows: list[PairDailySummary] = []
+    capitals: list[Decimal] = []
     rows_with_24h_history: list[tuple[Decimal, Decimal]] = []  # (value_now, value_24h_ago)
     for pair in pairs:
         latest_snapshot = conn.execute(
@@ -347,8 +350,10 @@ def _check_global_daily_summary(
             continue
 
         total_value = Decimal(latest_snapshot["total_value"])
+        pair_capital = starting_capital(conn, pair.symbol, capital_per_pair)
+        capitals.append(pair_capital)
         return_pct_since_start = (
-            (total_value - capital_per_pair) / capital_per_pair * Decimal(100) if capital_per_pair > 0 else Decimal(0)
+            (total_value - pair_capital) / pair_capital * Decimal(100) if pair_capital > 0 else Decimal(0)
         )
 
         snapshot_24h_ago = conn.execute(
@@ -372,7 +377,10 @@ def _check_global_daily_summary(
         return  # no pair has any snapshot history yet -- nothing to summarize
 
     portfolio_total_value = sum((row.total_value for row in rows), Decimal(0))
-    total_capital = capital_per_pair * Decimal(len(pairs))
+    # Sum of what each summarized pair really started with -- not
+    # capital_per_pair * len(pairs), which is wrong as soon as live.pairs has
+    # changed size since some pairs started (see starting_capital).
+    total_capital = sum(capitals, Decimal(0))
     return_pct = (
         (portfolio_total_value - total_capital) / total_capital * Decimal(100) if total_capital > 0 else Decimal(0)
     )
@@ -526,7 +534,9 @@ def run_pair_worker(
     # 1000 total / 8 pairs = 125 each -- NOT cfg.backtest.initial_capital
     # (which stays the full amount per symbol, on purpose, for backtest.py's
     # own comparative analysis; see LiveConfig.capital_per_pair).
-    initial_cash = cfg.live.capital_per_pair
+    # ...unless this pair already traded under a different pair count: then its
+    # real starting cash (kept by reconstruct_engine_from_db) is the reference.
+    initial_cash = starting_capital(conn, symbol, cfg.live.capital_per_pair)
 
     # Rebuilds cash_balance + open lots from the DB (Task 6) so a restart
     # genuinely resumes the portfolio, not just each strategy's own state.

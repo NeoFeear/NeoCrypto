@@ -46,7 +46,7 @@ def sample_backtest_csv(tmp_path, monkeypatch):
 def test_index_shows_portfolio_summary_and_backtest_table(monkeypatch, sample_backtest_csv):
     monkeypatch.setattr("dashboard.app.get_conn", lambda: _seeded_conn())
     monkeypatch.setattr("dashboard.app._active_symbol_default", lambda: "BTCUSDT")
-    monkeypatch.setattr("dashboard.app._initial_capital", lambda: Decimal("1000"))
+    monkeypatch.setattr("dashboard.app._initial_capital", lambda *a: Decimal("1000"))
 
     response = client.get("/?symbol=BTCUSDT")
 
@@ -74,7 +74,7 @@ def test_index_handles_missing_backtest_csv_gracefully(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)  # no backtest_report.csv here
     monkeypatch.setattr("dashboard.app.get_conn", lambda: _seeded_conn())
     monkeypatch.setattr("dashboard.app._active_symbol_default", lambda: "BTCUSDT")
-    monkeypatch.setattr("dashboard.app._initial_capital", lambda: Decimal("1000"))
+    monkeypatch.setattr("dashboard.app._initial_capital", lambda *a: Decimal("1000"))
 
     response = client.get("/?symbol=BTCUSDT")
 
@@ -87,7 +87,7 @@ def test_index_with_no_snapshots_yet_does_not_crash(tmp_path, monkeypatch):
     from db.migrate import init_db
     monkeypatch.setattr("dashboard.app.get_conn", lambda: init_db(":memory:"))
     monkeypatch.setattr("dashboard.app._active_symbol_default", lambda: "BTCUSDT")
-    monkeypatch.setattr("dashboard.app._initial_capital", lambda: Decimal("1000"))
+    monkeypatch.setattr("dashboard.app._initial_capital", lambda *a: Decimal("1000"))
 
     response = client.get("/?symbol=BTCUSDT")
 
@@ -97,7 +97,7 @@ def test_index_with_no_snapshots_yet_does_not_crash(tmp_path, monkeypatch):
 def test_index_embeds_chart_data_as_json(monkeypatch, sample_backtest_csv):
     monkeypatch.setattr("dashboard.app.get_conn", lambda: _seeded_conn())
     monkeypatch.setattr("dashboard.app._active_symbol_default", lambda: "BTCUSDT")
-    monkeypatch.setattr("dashboard.app._initial_capital", lambda: Decimal("1000"))
+    monkeypatch.setattr("dashboard.app._initial_capital", lambda *a: Decimal("1000"))
 
     response = client.get("/?symbol=BTCUSDT")
 
@@ -316,7 +316,7 @@ def test_analyses_page_with_zero_initial_capital_does_not_crash(monkeypatch):
     monkeypatch.setattr("dashboard.app.get_conn", lambda: _seeded_conn_with_trades())
     monkeypatch.setattr("dashboard.app._active_symbol_default", lambda: "BTCUSDT")
     monkeypatch.setattr("dashboard.app._poll_interval_default", lambda: "5m")
-    monkeypatch.setattr("dashboard.app._initial_capital", lambda: Decimal("0"))
+    monkeypatch.setattr("dashboard.app._initial_capital", lambda *a: Decimal("0"))
 
     response = client.get("/analyses?symbol=BTCUSDT")
 
@@ -367,7 +367,7 @@ def test_nav_links_carry_active_symbol_forward(monkeypatch):
     # revert to the config-default symbol.
     monkeypatch.setattr("dashboard.app.get_conn", lambda: _seeded_conn())
     monkeypatch.setattr("dashboard.app._active_symbol_default", lambda: "BTCUSDT")
-    monkeypatch.setattr("dashboard.app._initial_capital", lambda: Decimal("1000"))
+    monkeypatch.setattr("dashboard.app._initial_capital", lambda *a: Decimal("1000"))
 
     response = client.get("/?symbol=ETHUSDT")
 

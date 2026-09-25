@@ -26,6 +26,25 @@ def insert_trade(conn: sqlite3.Connection, trade: Trade, commit: bool = True) ->
     return cursor.lastrowid
 
 
+def starting_capital(conn: sqlite3.Connection, symbol: str, default: Decimal) -> Decimal:
+    """The cash this symbol's live portfolio actually started with.
+
+    reconstruct_engine_from_db continues a pair's cash from its last trade, so
+    a pair keeps the capital it started with even when live.pairs later grows
+    or shrinks and live.capital_per_pair changes. Returns must be measured
+    against that real starting cash, derived here from the symbol's first
+    trade (cash after it, plus what it cost for a BUY); `default`
+    (live.capital_per_pair) only applies to a pair that has not traded yet."""
+    first = conn.execute(
+        "SELECT side, total_cost, cash_balance_after FROM trades WHERE symbol = ? ORDER BY id LIMIT 1",
+        (symbol,),
+    ).fetchone()
+    if first is None:
+        return default
+    after, cost = Decimal(first["cash_balance_after"]), Decimal(first["total_cost"])
+    return after + cost if first["side"] == Side.BUY.value else after - cost
+
+
 def insert_lot(
     conn: sqlite3.Connection, trade_id: int, symbol: str,
     quantity_restante: Decimal, prix_achat: Decimal, timestamp_achat: int,
