@@ -1,59 +1,232 @@
 {% extends "base.html" %}
+{% set page = 'principal' %}
 {% block title %}crypto-sim -- Principal{% endblock %}
-{% block content %}
-<form method="get" style="margin-bottom: 1rem;">
-    <label>Symbole :
-        <select name="symbol" onchange="this.form.submit()">
-            {% for s in symbols %}
-            <option value="{{ s }}" {% if s == active_symbol %}selected{% endif %}>{{ s }}</option>
-            {% endfor %}
-        </select>
-    </label>
-</form>
+{% block head %}
+<style>
+    /* ── totalisateur ─────────────────────────────── */
+    .tote { display: grid; grid-template-columns: 1.1fr 1.1fr 1.6fr repeat(3, .7fr); margin-top: 22px; }
+    .tote > div { padding: 16px 18px 18px; border-right: 1px solid var(--rule); min-width: 0; }
+    .tote > div:last-child { border-right: 0; }
+    .tote .lamp { display: block; margin-top: 8px; font-size: 30px; line-height: 1; }
+    .tote .big .lamp { font-size: 52px; }
+    .tote .unit { font: 700 14px var(--f-paint); letter-spacing: .08em; color: var(--muted); margin-left: 6px; text-shadow: none; }
+    .tote .sub { display: block; margin-top: 8px; font-size: 12.5px; color: var(--muted); }
 
-{% if latest %}
-<div class="stat-tiles">
-    <div class="stat-tile"><div class="label">Valeur totale</div><div class="value">{{ latest.total_value|num }}</div></div>
-    <div class="stat-tile"><div class="label">PnL realise cumule</div>
-        <div class="value {% if latest.realized_pnl_cumule >= 0 %}gain{% else %}loss{% endif %}">{{ latest.realized_pnl_cumule|num }}</div></div>
-    <div class="stat-tile"><div class="label">PnL latent</div>
-        <div class="value {% if latest.unrealized_pnl >= 0 %}gain{% else %}loss{% endif %}">{{ latest.unrealized_pnl|num }}</div></div>
-    <div class="stat-tile"><div class="label">Rendement depuis le debut</div>
-        <div class="value {% if return_pct >= 0 %}gain{% else %}loss{% endif %}">{{ return_pct|num }}%</div></div>
+    /* ── la piste ─────────────────────────────────── */
+    .track { position: relative; margin-top: 14px; padding: 16px 18px 12px; overflow: hidden; }
+    .lanes { position: relative; }
+    .lane { position: relative; height: 34px; border-bottom: 1px dashed var(--rule); }
+    .lane:last-child { border-bottom: 0; }
+    .lane .runner { position: absolute; top: 2px; left: var(--x); transform: translateX(-50%); display: flex; align-items: center; gap: 8px;
+        animation: gallop 1.6s var(--ease) backwards; animation-delay: calc(var(--k) * 90ms + 250ms); }
+    .lane .runner .tag { white-space: nowrap; font: 700 13px var(--f-paint); letter-spacing: .06em; color: var(--chalk); background: var(--panel); padding: 1px 6px; border-radius: 2px; }
+    .lane .runner .tag b { font-family: var(--f-lamp); font-weight: 800; }
+    .lane .runner.left .tag { order: -1; }
+    @keyframes gallop { from { left: var(--zero); } }
+    .post { position: absolute; top: 0; bottom: 0; left: var(--zero); width: 0; border-left: 2px solid var(--chalk); opacity: .55; }
+    .post::after { content: "départ 0 %"; position: absolute; top: -2px; left: 6px; font: 700 11px var(--f-paint); letter-spacing: .12em; text-transform: uppercase; color: var(--muted); white-space: nowrap; }
+    .track-scale { display: flex; justify-content: space-between; margin-top: 8px; font: 600 12px var(--f-lamp); color: var(--muted); }
+
+    /* ── tableau des partants ─────────────────────── */
+    .field tbody tr { cursor: pointer; transition: background .2s; animation: rise .6s var(--ease) backwards; animation-delay: calc(var(--k) * 60ms + 500ms); }
+    .field tbody tr:hover { background: var(--panel-2); }
+    .field tbody tr[aria-current="true"] { background: var(--lamp-soft); }
+    .field .pos { font-size: 26px; width: 58px; }
+    .field th:nth-child(2), .field td:nth-child(2) { text-align: left; }
+    .field .who { display: flex; align-items: center; gap: 12px; }
+    .field .who a { text-decoration: none; font: 700 17px var(--f-paint); letter-spacing: .04em; }
+    .field .who small { display: block; font: 600 12px var(--f-paint); letter-spacing: .14em; text-transform: uppercase; color: var(--muted); }
+    .field .ret { font-size: 22px; }
+    .field td.muted { color: var(--muted); }
+    .spark { display: block; width: 120px; height: 30px; margin-left: auto; }
+    .spark polyline { fill: none; stroke: var(--sc); stroke-width: 1.6; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
+    .spark line { stroke: var(--rule-2); stroke-dasharray: 2 3; vector-effect: non-scaling-stroke; }
+
+    /* ── detail du partant ────────────────────────── */
+    .detail-head { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+    .detail-head > .saddle { width: 44px; height: 44px; font-size: 26px; }
+    .detail-head b { font: 800 28px/1 var(--f-paint); letter-spacing: .04em; }
+    .detail-head small { font: 600 13px var(--f-paint); letter-spacing: .14em; text-transform: uppercase; color: var(--muted); }
+    .stat-tiles { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin-top: 16px; }
+    .stat-tile { padding: 14px 16px 16px; border-right: 1px solid var(--rule); min-width: 0; }
+    .stat-tile:last-child { border-right: 0; }
+    .stat-tile .value { display: block; margin-top: 8px; font-size: 28px; line-height: 1; }
+    .chart-box { margin-top: 12px; padding: 14px 14px 8px; height: 300px; }
+    .bt td:nth-child(2), .bt td:last-child { font-family: var(--f-lamp); font-weight: 800; }
+
+    @media (max-width: 980px) {
+        .tote { grid-template-columns: repeat(3, 1fr); }
+        .tote > div:nth-child(3) { border-right: 0; }
+        .tote > div:nth-child(-n+3) { border-bottom: 1px solid var(--rule); }
+        .stat-tiles { grid-template-columns: repeat(2, 1fr); }
+        .stat-tile:nth-child(2) { border-right: 0; }
+        .stat-tile:nth-child(-n+2) { border-bottom: 1px solid var(--rule); }
+    }
+    @media (max-width: 640px) {
+        .tote { grid-template-columns: repeat(2, 1fr); }
+        .tote > div { border-right: 1px solid var(--rule) !important; border-bottom: 1px solid var(--rule); }
+        .tote > div:nth-child(even) { border-right: 0 !important; }
+        .tote .big { grid-column: 1 / -1; border-right: 0 !important; }
+        .tote .big .lamp { font-size: 44px; }
+        .field .hide-sm { display: none; }
+        .spark { width: 70px; }
+        .lane .runner .tag { display: none; }
+    }
+</style>
+{% endblock %}
+
+{% block clock %}
+{% if totals and totals.updated_ms %}
+<div class="clock" id="clock" data-updated="{{ totals.updated_ms }}">
+    Prochain relevé <span class="lamp" id="countdown">--:--</span>
 </div>
-{% else %}
-<p>Aucune donnee de portefeuille pour {{ active_symbol }} pour l'instant.</p>
+{% endif %}
+{% endblock %}
+
+{% block content %}
+{% if runners %}
+<section class="tote panel" aria-label="Totalisateur">
+    <div><span class="label">Engagé</span><span class="lamp chalk">{{ totals.start|num }}<span class="unit">USDT</span></span><span class="sub">cash de départ réel des {{ totals.runners }} partants</span></div>
+    <div><span class="label">Valeur</span><span class="lamp">{{ totals.value|num }}<span class="unit">USDT</span></span><span class="sub">cash + positions ouvertes</span></div>
+    <div class="big"><span class="label">Rendement du portefeuille</span>
+        <span class="lamp {{ 'gain' if totals.return_pct >= 0 else 'loss' }}">{{ '+' if totals.return_pct >= 0 }}{{ totals.return_pct|num }}<span class="unit">%</span></span></div>
+    <div><span class="label">Partants</span><span class="lamp chalk">{{ totals.runners }}</span></div>
+    <div><span class="label">Trades</span><span class="lamp chalk">{{ totals.trades }}</span></div>
+    <div><span class="label">Jour</span><span class="lamp chalk">J{{ totals.day }}</span></div>
+</section>
+
+{% set rets = runners|map(attribute='return_pct')|map('float')|list %}
+{% set lo = [rets|min, 0.0]|min %}{% set hi = [rets|max, 0.0]|max %}
+{% set span = (hi - lo) if hi != lo else 1.0 %}
+{% set zero = 6 + (0.0 - lo) / span * 88 %}
+<h2>La course <small>chaque couloir = une paire, placée selon son rendement depuis son propre départ</small></h2>
+<section class="track panel" aria-label="Positions des partants">
+    <div class="lanes" style="--zero: {{ '%.2f'|format(zero) }}%">
+        <div class="post" aria-hidden="true"></div>
+        {% for r in runners|sort(attribute='number') %}
+        {% set x = 6 + (r.return_pct|float - lo) / span * 88 %}
+        <div class="lane" data-n="{{ r.number }}">
+            <div class="runner {{ 'left' if x > 70 }}" style="--x: {{ '%.2f'|format(x) }}%; --zero: {{ '%.2f'|format(zero) }}%; --k: {{ loop.index0 }}" title="{{ r.symbol }} {{ r.return_pct|num }} %">
+                <span class="saddle sm">{{ r.number }}</span><span class="tag">{{ r.symbol[:-4] }} <b class="{{ 'gain' if r.return_pct >= 0 else 'loss' }}">{{ '+' if r.return_pct >= 0 }}{{ r.return_pct|num(1) }}%</b></span>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+    <div class="track-scale"><span>{{ '%+.1f'|format(lo) }} %</span><span>{{ '%+.1f'|format(hi) }} %</span></div>
+</section>
+
+<h2>Tableau des partants <small>classés par rendement · clic pour le détail</small></h2>
+<div class="panel scroll-x">
+<table class="board field">
+    <thead><tr><th>Pos</th><th>Partant</th><th class="hide-sm">Forme</th><th class="hide-sm">Départ</th><th>Valeur</th><th>Rendement</th><th class="hide-sm">Trades</th></tr></thead>
+    <tbody>
+    {% for r in runners %}
+    {% set vals = r.spark|map('float')|list %}
+    {% set mn = [vals|min, r.start|float]|min %}{% set mx = [vals|max, r.start|float]|max %}{% set rg = (mx - mn) if mx != mn else 1.0 %}
+    <tr data-n="{{ r.number }}" style="--k: {{ loop.index0 }}" {% if r.symbol == active_symbol %}aria-current="true"{% endif %} onclick="location.href='/?symbol={{ r.symbol }}#detail'">
+        <td class="pos lamp chalk">{{ r.position }}</td>
+        <td><div class="who"><span class="saddle">{{ r.number }}</span><div><a href="/?symbol={{ r.symbol }}#detail">{{ r.symbol }}</a><small>{{ r.strategy or '—' }}</small></div></div></td>
+        <td class="hide-sm"><svg class="spark" viewBox="0 0 120 30" preserveAspectRatio="none" aria-hidden="true">
+            <line x1="0" x2="120" y1="{{ '%.1f'|format(28 - (r.start|float - mn) / rg * 26) }}" y2="{{ '%.1f'|format(28 - (r.start|float - mn) / rg * 26) }}"/>
+            <polyline points="{% for v in vals %}{{ '%.1f'|format(loop.index0 / ((vals|length - 1) or 1) * 120) }},{{ '%.1f'|format(28 - (v - mn) / rg * 26) }} {% endfor %}"/></svg></td>
+        <td class="hide-sm muted">{{ r.start|num }}</td>
+        <td>{{ r.value|num }}</td>
+        <td class="ret lamp {{ 'gain' if r.return_pct >= 0 else 'loss' }}">{{ '+' if r.return_pct >= 0 }}{{ r.return_pct|num }}%</td>
+        <td class="hide-sm muted">{{ r.trades }}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+</table>
+</div>
 {% endif %}
 
-<canvas id="portfolio-chart" height="80"></canvas>
-<script>
-new Chart(document.getElementById("portfolio-chart"), {
-    type: "line",
-    data: {
-        labels: {{ chart_labels_json | safe }},
-        datasets: [{
-            label: "Valeur totale (Note: pas d'axe prix -- portfolio_snapshots ne stocke pas le prix marche)",
-            data: {{ chart_values_json | safe }}.map(Number),
-            borderColor: "#93c5fd",
-            tension: 0.1,
-        }],
-    },
-    options: { scales: { x: { display: false } } },
-});
-</script>
+<h2 id="detail">Détail du partant</h2>
+{% set rn = runner_numbers() %}
+{% set ar = active_runner %}
+<div class="detail-head" {% if ar %}data-n="{{ ar.number }}"{% endif %}>
+    {% if ar %}<span class="saddle">{{ ar.number }}</span>{% endif %}
+    <div><b>{{ active_symbol }}</b><br><small>{{ ar.strategy if ar and ar.strategy else 'paire' }}{% if ar %} · {{ ar.position }}<sup>e</sup> sur {{ runners|length }}{% endif %}</small></div>
+    <div class="chips" style="margin-left:auto">
+        {% for s in symbols %}<a class="chip" href="/?symbol={{ s }}#detail" data-n="{{ rn.get(s, 11) }}" {% if s == active_symbol %}aria-current="true"{% endif %}><span class="saddle sm">{{ rn.get(s, '·') }}</span>{{ s[:-4] if s.endswith('USDT') else s }}</a>{% endfor %}
+    </div>
+</div>
 
-<h2>Dernier backtest comparatif -- {{ active_symbol }}</h2>
+{% if latest %}
+<div class="stat-tiles panel">
+    <div class="stat-tile"><div class="label">Valeur totale</div><div class="value lamp">{{ latest.total_value|num }}</div></div>
+    <div class="stat-tile"><div class="label">PnL realise cumule</div>
+        <div class="value lamp {% if latest.realized_pnl_cumule >= 0 %}gain{% else %}loss{% endif %}">{{ latest.realized_pnl_cumule|num }}</div></div>
+    <div class="stat-tile"><div class="label">PnL latent</div>
+        <div class="value lamp {% if latest.unrealized_pnl >= 0 %}gain{% else %}loss{% endif %}">{{ latest.unrealized_pnl|num }}</div></div>
+    <div class="stat-tile"><div class="label">Rendement depuis le debut</div>
+        <div class="value lamp {% if return_pct >= 0 %}gain{% else %}loss{% endif %}">{{ return_pct|num }}%</div></div>
+</div>
+{% else %}
+<p class="empty">Aucune donnee de portefeuille pour {{ active_symbol }} pour l'instant.</p>
+{% endif %}
+
+<div class="chart-box panel" {% if ar %}data-n="{{ ar.number }}"{% endif %} id="chart-box">
+    <canvas id="portfolio-chart" aria-label="Valeur du portefeuille de {{ active_symbol }} dans le temps"></canvas>
+</div>
+
+<h2>Dernier backtest comparatif <small>{{ active_symbol }} · 90 jours de bougies 1 h</small></h2>
 {% if backtest_rows %}
-<table>
-    <tr><th>Strategie</th><th>Rendement %</th><th>Trades</th><th>Taux de reussite %</th><th>Drawdown max %</th><th>Alpha vs Buy&amp;Hold %</th></tr>
+<div class="panel scroll-x">
+<table class="board bt">
+    <thead><tr><th>Strategie</th><th>Rendement %</th><th>Trades</th><th>Taux de reussite %</th><th>Drawdown max %</th><th>Alpha vs Buy&amp;Hold %</th></tr></thead>
+    <tbody>
     {% for row in backtest_rows %}
     <tr>
         <td>{{ row.strategy }}</td><td>{{ row.return_pct }}</td><td>{{ row.nb_trades }}</td>
         <td>{{ row.win_rate_pct }}</td><td>{{ row.max_drawdown_pct }}</td><td>{{ row.alpha_vs_buy_hold_pct }}</td>
     </tr>
     {% endfor %}
+    </tbody>
 </table>
+</div>
 {% else %}
-<p>Aucun resultat de backtest disponible (lancer <code>python backtest.py</code>).</p>
+<p class="empty">Aucun resultat de backtest disponible (lancer <code>python backtest.py</code>).</p>
 {% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+    const box = document.getElementById("chart-box");
+    const color = getComputedStyle(box).getPropertyValue("--sc").trim() || "#ffb42c";
+    const labels = {{ chart_labels_json | safe }};
+    const values = {{ chart_values_json | safe }}.map(Number);
+    const start = {{ (initial_capital|float) if initial_capital is defined and initial_capital else 'null' }};
+    const fmt = new Intl.DateTimeFormat("fr-FR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+    const datasets = [{ data: values, borderColor: color, borderWidth: 2, tension: 0.15, fill: true,
+        backgroundColor: (c) => { const g = c.chart.ctx.createLinearGradient(0, 0, 0, c.chart.height); g.addColorStop(0, color + "33"); g.addColorStop(1, color + "00"); return g; } }];
+    if (start) datasets.push({ data: values.map(() => start), borderColor: "#9a978c", borderWidth: 1, borderDash: [5, 4], fill: false });
+    new Chart(document.getElementById("portfolio-chart"), {
+        type: "line",
+        data: { labels: labels, datasets: datasets },
+        options: {
+            maintainAspectRatio: false, interaction: { mode: "index", intersect: false },
+            scales: {
+                x: { ticks: { maxTicksLimit: 6, callback: (v, i) => fmt.format(new Date(labels[i])) }, grid: { display: false } },
+                y: { ticks: { callback: (v) => { const r = Math.max(...values) - Math.min(...values); return v.toFixed(r < 10 ? 1 : 0); } } },
+            },
+            plugins: { tooltip: { callbacks: { title: (items) => fmt.format(new Date(labels[items[0].dataIndex])),
+                label: (item) => (item.datasetIndex ? "départ " : "valeur ") + Number(item.raw).toFixed(2) + " USDT" } } },
+        },
+    });
+})();
+/* compte a rebours du prochain releve (poll de 5 min) ; recharge la page ensuite si elle est visible */
+(function () {
+    const clock = document.getElementById("clock"); if (!clock) return;
+    const out = document.getElementById("countdown");
+    const next = () => { let t = +clock.dataset.updated + 300000; while (t < Date.now() - 20000) t += 300000; return t; };
+    let target = next();
+    const tick = () => {
+        const s = Math.max(0, Math.round((target - Date.now()) / 1000));
+        out.textContent = String(Math.floor(s / 60)).padStart(2, "0") + ":" + String(s % 60).padStart(2, "0");
+        if (s === 0 && Date.now() - target > 25000 && document.visibilityState === "visible") location.reload();
+    };
+    tick(); setInterval(tick, 1000);
+})();
+</script>
 {% endblock %}

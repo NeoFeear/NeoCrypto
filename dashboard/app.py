@@ -86,6 +86,31 @@ def _num(value, digits: int = 2) -> str:
 
 
 templates.env.filters["num"] = _num
+
+
+def _px(value, digits: int = 8) -> str:
+    """Price-like values: up to `digits` decimals, trailing zeros trimmed
+    (a DOGE price needs 6 decimals, a BTC price none)."""
+    if value is None:
+        return ""
+    try:
+        text = f"{Decimal(str(value)):.{digits}f}"
+    except Exception:
+        return str(value)
+    return text.rstrip("0").rstrip(".") if "." in text else text
+
+
+templates.env.filters["px"] = _px
+
+
+def _runner_numbers() -> dict[str, int]:
+    try:
+        return {sym: i for i, (sym, _) in enumerate(_pair_order(), start=1)}
+    except Exception:
+        return {}
+
+
+templates.env.globals["runner_numbers"] = _runner_numbers
 templates.env.filters["format_ts"] = _format_timestamp
 templates.env.filters["format_qty"] = format_quantity
 
@@ -119,6 +144,61 @@ def _initial_capital(conn: sqlite3.Connection, symbol: str) -> Decimal:
     return starting_capital(conn, symbol, load_config().live.capital_per_pair)
 
 
+def _pair_order() -> list[tuple[str, str]]:
+    """(symbol, strategy) in live.pairs order -- which also fixes each pair's
+    runner number and saddle-cloth colour on the board. Without a readable
+    config the board still renders, from the symbols found in the database."""
+    try:
+        return [(p.symbol, p.strategy) for p in load_config().live.pairs]
+    except (OSError, KeyError, TypeError, ValueError):
+        return []
+
+
+def _spark(snapshots, n: int = 48) -> list[str]:
+    if len(snapshots) <= n:
+        return [str(s.total_value) for s in snapshots]
+    step = (len(snapshots) - 1) / (n - 1)
+    return [str(snapshots[round(i * step)].total_value) for i in range(n)]
+
+
+def _field(conn: sqlite3.Connection) -> tuple[list[dict], dict]:
+    """Every live pair with history, ranked by return against the cash it
+    really started with (db.repository.starting_capital), plus the totals."""
+    order = _pair_order()
+    known = {sym for sym, _ in order}
+    extra = [(sym, "") for sym in list_symbols_with_trades(conn) if sym not in known]
+    runners = []
+    for number, (symbol, strategy) in enumerate(order + extra, start=1):
+        snapshots = list_snapshots(conn, symbol)
+        if not snapshots:
+            continue
+        start = _initial_capital(conn, symbol)
+        value = snapshots[-1].total_value
+        n_trades = conn.execute("SELECT COUNT(*) FROM trades WHERE symbol = ?", (symbol,)).fetchone()[0]
+        runners.append({
+            "symbol": symbol, "strategy": strategy, "number": number, "start": start, "value": value,
+            "return_pct": (value - start) / start * Decimal(100) if start > 0 else Decimal(0),
+            "realized": snapshots[-1].realized_pnl_cumule, "latent": snapshots[-1].unrealized_pnl,
+            "trades": n_trades, "spark": _spark(snapshots), "since_ms": snapshots[0].timestamp,
+            "updated_ms": snapshots[-1].timestamp,
+        })
+    runners.sort(key=lambda r: r["return_pct"], reverse=True)
+    for position, r in enumerate(runners, start=1):
+        r["position"] = position
+    start_total = sum((r["start"] for r in runners), Decimal(0))
+    value_total = sum((r["value"] for r in runners), Decimal(0))
+    first_ms = min((r["since_ms"] for r in runners), default=None)
+    last_ms = max((r["updated_ms"] for r in runners), default=None)
+    totals = {
+        "start": start_total, "value": value_total,
+        "return_pct": (value_total - start_total) / start_total * Decimal(100) if start_total > 0 else Decimal(0),
+        "runners": len(runners), "trades": sum(r["trades"] for r in runners),
+        "day": (last_ms - first_ms) // 86_400_000 + 1 if first_ms is not None else 0,
+        "updated_ms": last_ms,
+    }
+    return runners, totals
+
+
 def _read_backtest_report() -> list[dict]:
     path = Path("backtest_report.csv")
     if not path.exists():
@@ -147,8 +227,14 @@ def index(request: Request, symbol: str | None = None) -> HTMLResponse:
 
     chart_labels = [s.timestamp for s in snapshots]
     chart_values = [str(s.total_value) for s in snapshots]
+    runners, totals = _field(conn)
+    active_runner = next((r for r in runners if r["symbol"] == active_symbol), None)
 
     return templates.TemplateResponse(request, "index.html", {
+        "runners": runners,
+        "totals": totals,
+        "active_runner": active_runner,
+        "initial_capital": initial_capital,
         "symbols": symbols,
         "active_symbol": active_symbol,
         "latest": latest,
@@ -204,6 +290,7 @@ def analyses(request: Request, symbol: str | None = None) -> HTMLResponse:
         "symbols": symbols,
         "active_symbol": active_symbol,
         "metrics": metrics,
+        "history_days": days if snapshots else 0,
         "monthly_returns": monthly if snapshots else {},
         "dd_labels_json": dd_labels_json if snapshots else "[]",
         "dd_values_json": dd_values_json if snapshots else "[]",

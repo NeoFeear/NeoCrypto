@@ -1,58 +1,99 @@
 {% extends "base.html" %}
+{% set page = 'analyses' %}
 {% block title %}crypto-sim -- Analyses{% endblock %}
+{% block head %}
+<style>
+    .pick { margin-top: 22px; }
+    .stewards { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin-top: 14px; }
+    .metric { padding: 16px 18px 18px; border-right: 1px solid var(--rule); border-bottom: 1px solid var(--rule); min-width: 0;
+        animation: rise .55s var(--ease) backwards; animation-delay: calc(var(--k) * 50ms); }
+    .metric:nth-child(4n) { border-right: 0; }
+    .metric:nth-last-child(-n+4) { border-bottom: 0; }
+    .metric .lamp { display: block; margin: 8px 0 6px; font-size: 32px; line-height: 1; }
+    .metric p { margin: 0; font-size: 13px; line-height: 1.45; color: var(--muted); max-width: 34ch; }
+    .verdict { display: inline-block; margin-left: 8px; padding: 1px 7px; border-radius: 2px; font: 700 11px var(--f-paint); letter-spacing: .12em;
+        text-transform: uppercase; vertical-align: 3px; border: 1px solid currentColor; }
+    .verdict.good { color: var(--gain); } .verdict.mid { color: var(--lamp); } .verdict.bad { color: var(--loss); }
+    .charts { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+    .chart-box { padding: 14px 14px 8px; height: 260px; }
+    .caveat { margin: 0 0 12px; padding: 12px 16px; border: 1px solid color-mix(in srgb, var(--lamp) 45%, transparent); border-radius: 4px; background: var(--lamp-soft); font-size: 14px; max-width: 90ch; }
+    .caveat .label { color: var(--lamp); margin-right: 8px; }
+    .months { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 8px; }
+    .month { padding: 12px 14px; background: var(--panel); border: 1px solid var(--rule); border-radius: 4px; }
+    .month .lamp { display: block; margin-top: 6px; font-size: 22px; }
+    @media (max-width: 980px) { .stewards { grid-template-columns: repeat(2, 1fr); } .metric:nth-child(4n) { border-right: 1px solid var(--rule); }
+        .metric:nth-child(2n) { border-right: 0; } .metric:nth-last-child(-n+4) { border-bottom: 1px solid var(--rule); } .metric:nth-last-child(-n+2) { border-bottom: 0; }
+        .charts { grid-template-columns: 1fr; } }
+</style>
+{% endblock %}
 {% block content %}
-<form method="get" style="margin-bottom: 1rem;">
-    <label>Symbole :
-        <select name="symbol" onchange="this.form.submit()">
-            {% for s in symbols %}
-            <option value="{{ s }}" {% if s == active_symbol %}selected{% endif %}>{{ s }}</option>
-            {% endfor %}
-        </select>
-    </label>
-</form>
+{% set rn = runner_numbers() %}
+<div class="pick chips" role="navigation" aria-label="Partant">
+    {% for s in symbols %}<a class="chip" href="/analyses?symbol={{ s }}" data-n="{{ rn.get(s, 11) }}" {% if s == active_symbol %}aria-current="true"{% endif %}><span class="saddle sm">{{ rn.get(s, '·') }}</span>{{ s[:-4] if s.endswith('USDT') else s }}</a>{% endfor %}
+</div>
 
+<h2>Rapport des commissaires <small>{{ active_symbol }} · risque avant rendement</small></h2>
 {% if metrics %}
-<table>
-    <tr><th>Metrique</th><th>Valeur</th></tr>
-    <tr><td>Sharpe</td><td>{{ metrics.sharpe|num }}</td></tr>
-    <tr><td>Sortino</td><td>{{ metrics.sortino|num }}</td></tr>
-    <tr><td>Calmar</td><td>{{ metrics.calmar|num }}</td></tr>
-    <tr><td>Profit factor</td><td>{{ metrics.profit_factor|num }}</td></tr>
-    <tr><td>Expectancy</td><td>{{ metrics.expectancy|num }}</td></tr>
-    <tr><td>Exposure time %</td><td>{{ metrics.exposure_time_pct|num }}</td></tr>
-    <tr><td>Drawdown max %</td><td>{{ metrics.max_drawdown_pct|num }}</td></tr>
-    <tr><td>Recuperation (jours)</td><td>{{ metrics.recovery_days if metrics.recovery_days is not none else "N/A" }}</td></tr>
-</table>
+{% set short = history_days < 30 %}
+{% if short %}<p class="caveat"><span class="label">Historique court</span> {{ history_days }} jour{{ 's' if history_days > 1 }} de données : Sharpe, Sortino et Calmar sont annualisés, donc largement surestimés tant qu'on n'a pas au moins un mois. Lis-les comme une tendance, pas comme un verdict.</p>{% endif %}
+{% macro verdict(v, good, mid, higher=True, annual=False) -%}
+{%- if annual and short -%}<span class="verdict mid">peu fiable</span>
+{%- elif v is none -%}{%- else -%}{%- set f = v|float -%}
+{%- if (higher and f >= good) or (not higher and f <= good) -%}<span class="verdict good">bon</span>
+{%- elif (higher and f >= mid) or (not higher and f <= mid) -%}<span class="verdict mid">moyen</span>
+{%- else -%}<span class="verdict bad">faible</span>{%- endif -%}{%- endif -%}
+{%- endmacro %}
+<div class="stewards panel">
+    <div class="metric" style="--k:0"><span class="label">Sharpe {{ verdict(metrics.sharpe, 1, 0, annual=True) }}</span><span class="lamp">{{ metrics.sharpe|num }}</span><p>Rendement par unité de volatilité, annualisé. Au-dessus de 1, le gain paie le risque pris.</p></div>
+    <div class="metric" style="--k:1"><span class="label">Sortino {{ verdict(metrics.sortino, 1.5, 0, annual=True) }}</span><span class="lamp">{{ metrics.sortino|num }}</span><p>Comme Sharpe, mais seules les baisses comptent comme risque.</p></div>
+    <div class="metric" style="--k:2"><span class="label">Calmar {{ verdict(metrics.calmar, 1, 0.3, annual=True) }}</span><span class="lamp">{{ metrics.calmar|num }}</span><p>Rendement annualisé rapporté à la pire chute. Mesure la tenue dans la tempête.</p></div>
+    <div class="metric" style="--k:3"><span class="label">Profit factor {{ verdict(metrics.profit_factor, 1.5, 1) }}</span>{% if metrics.profit_factor is not none and metrics.profit_factor|string in ('Infinity', 'inf') %}<span class="lamp gain">∞</span><p>Aucune vente perdante pour l'instant : le ratio n'a pas encore de dénominateur.</p>{% else %}<span class="lamp">{{ metrics.profit_factor|num }}</span><p>Gains bruts divisés par pertes brutes. Sous 1, la stratégie perd plus qu'elle ne gagne.</p>{% endif %}</div>
+    <div class="metric" style="--k:4"><span class="label">Expectancy {{ verdict(metrics.expectancy, 0.01, 0) }}</span><span class="lamp">{{ metrics.expectancy|num }}</span><p>Gain moyen attendu par vente, en USDT. Doit être positif pour que répéter ait un sens.</p></div>
+    <div class="metric" style="--k:5"><span class="label">Exposure time %</span><span class="lamp chalk">{{ metrics.exposure_time_pct|num }}</span><p>Part du temps passée avec une position ouverte, donc exposée au marché.</p></div>
+    <div class="metric" style="--k:6"><span class="label">Drawdown max % {{ verdict(metrics.max_drawdown_pct, 10, 25, higher=False) }}</span><span class="lamp loss">{{ metrics.max_drawdown_pct|num }}</span><p>Pire chute depuis un sommet. C'est ce qu'il faut pouvoir encaisser.</p></div>
+    <div class="metric" style="--k:7"><span class="label">Recuperation (jours)</span><span class="lamp chalk">{{ metrics.recovery_days if metrics.recovery_days is not none else "N/A" }}</span><p>Jours pour revenir au sommet après la pire chute. N/A : pas encore revenu.</p></div>
+</div>
 {% else %}
-<p>Pas encore de donnees pour {{ active_symbol }}.</p>
+<p class="empty">Pas encore de donnees pour {{ active_symbol }}.</p>
 {% endif %}
 
 {% if metrics %}
-<h2>Courbe de drawdown</h2>
-<canvas id="drawdown-chart" height="60"></canvas>
-<script>
-new Chart(document.getElementById("drawdown-chart"), {
-    type: "line",
-    data: { labels: {{ dd_labels_json | safe }}, datasets: [{ label: "Drawdown %", data: {{ dd_values_json | safe }}.map(Number), borderColor: "#f87171" }] },
-    options: { scales: { x: { display: false } } },
-});
-</script>
-
-<h2>Distribution des trades</h2>
-<canvas id="trade-distribution-chart" height="60"></canvas>
-<script>
-new Chart(document.getElementById("trade-distribution-chart"), {
-    type: "bar",
-    data: { labels: {{ dist_labels_json | safe }}, datasets: [{ label: "Nombre de trades", data: {{ dist_counts_json | safe }}, backgroundColor: "#93c5fd" }] },
-});
-</script>
+<div class="charts">
+    <section><h2>Courbe de drawdown <small>écart au dernier sommet</small></h2>
+        <div class="chart-box panel"><canvas id="drawdown-chart" aria-label="Courbe de drawdown"></canvas></div></section>
+    <section><h2>Distribution des trades <small>ventes par tranche de PnL</small></h2>
+        <div class="chart-box panel"><canvas id="trade-distribution-chart" aria-label="Distribution des trades"></canvas></div></section>
+</div>
 
 <h2>Rendements mensuels</h2>
-<table>
-    <tr><th>Mois</th><th>Rendement %</th></tr>
+<div class="months">
     {% for month, pct in monthly_returns.items() %}
-    <tr><td>{{ month }}</td><td class="{% if pct >= 0 %}gain{% else %}loss{% endif %}">{{ pct|num }}</td></tr>
+    <div class="month"><span class="label">{{ month }}</span><span class="lamp {% if pct >= 0 %}gain{% else %}loss{% endif %}">{{ '+' if pct >= 0 }}{{ pct|num }}%</span></div>
+    {% else %}
+    <p class="empty">Moins d'un mois d'historique.</p>
     {% endfor %}
-</table>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+{% if metrics %}
+<script>
+const fmt = new Intl.DateTimeFormat("fr-FR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+const ddLabels = {{ dd_labels_json | safe }};
+new Chart(document.getElementById("drawdown-chart"), {
+    type: "line",
+    data: { labels: ddLabels, datasets: [{ label: "Drawdown %", data: {{ dd_values_json | safe }}.map(Number), borderColor: "#ff6a5a", borderWidth: 1.8,
+        fill: "origin", backgroundColor: "rgba(255, 106, 90, .14)", tension: 0.1 }] },
+    options: { maintainAspectRatio: false, scales: { x: { ticks: { maxTicksLimit: 5, callback: (v, i) => fmt.format(new Date(ddLabels[i])) }, grid: { display: false } },
+        y: { ticks: { callback: (v) => v + " %" } } } },
+});
+new Chart(document.getElementById("trade-distribution-chart"), {
+    type: "bar",
+    data: { labels: {{ dist_labels_json | safe }}.map((l) => (Number(l) > 0 ? "+" : "") + Number(l).toFixed(2)), datasets: [{ label: "Nombre de trades", data: {{ dist_counts_json | safe }},
+        backgroundColor: {{ dist_labels_json | safe }}.map((l) => Number(l) < 0 ? "#ff6a5a" : "#62d67d"), borderRadius: 2 }] },
+    options: { maintainAspectRatio: false, scales: { x: { grid: { display: false } }, y: { ticks: { precision: 0 } } } },
+});
+</script>
 {% endif %}
 {% endblock %}

@@ -1,8 +1,32 @@
 {% extends "base.html" %}
+{% set page = 'transactions' %}
 {% block title %}crypto-sim -- Transactions{% endblock %}
+{% block head %}
+<style>
+    .filters { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)) auto auto; gap: 1px; margin-top: 22px; background: var(--rule); border: 1px solid var(--rule); border-radius: 4px; overflow: hidden; }
+    .filters label { display: flex; flex-direction: column; gap: 4px; padding: 9px 12px 10px; background: var(--panel); }
+    .filters select, .filters input { appearance: none; -webkit-appearance: none; background: transparent; border: 0; color: var(--chalk); font: 600 15px var(--f-body); padding: 2px 0; outline: none; min-width: 0; }
+    .filters select option { background: var(--panel); }
+    .filters label:focus-within { background: var(--panel-2); box-shadow: inset 0 -2px 0 var(--lamp); }
+    .filters .act { display: grid; place-items: center; padding: 0 18px; background: var(--panel); font: 700 14px var(--f-paint); letter-spacing: .1em; text-transform: uppercase;
+        text-decoration: none; border: 0; color: var(--chalk); cursor: pointer; transition: background .2s; }
+    .filters button.act { background: var(--lamp); color: #1a1204; }
+    .filters .act:hover { filter: brightness(1.1); }
+    .results td { font-size: 14px; }
+    .results .who { display: flex; align-items: center; gap: 8px; font: 700 15px var(--f-paint); letter-spacing: .04em; }
+    .side { display: inline-block; padding: 1px 8px; border-radius: 2px; font: 700 12px var(--f-paint); letter-spacing: .12em; }
+    .side.BUY { color: var(--chalk); border: 1px solid var(--rule-2); }
+    .side.SELL { color: #1a1204; background: var(--lamp); }
+    .results .num { font-family: var(--f-lamp); font-weight: 800; }
+    .results tbody tr { animation: rise .45s var(--ease) backwards; animation-delay: calc(min(var(--k), 12) * 30ms); }
+    .results tfoot td { border-top: 1px solid var(--rule-2); font: 800 15px var(--f-paint); letter-spacing: .08em; text-transform: uppercase; }
+    @media (max-width: 980px) { .filters { grid-template-columns: repeat(2, 1fr); } .filters .act { padding: 12px; } }
+</style>
+{% endblock %}
 {% block content %}
-<form method="get" style="margin-bottom: 1rem; display: flex; gap: 1rem;">
-    <label>Symbole :
+{% set rn = runner_numbers() %}
+<form method="get" class="filters" aria-label="Filtres">
+    <label><span class="label">Symbole</span>
         <select name="symbol">
             <option value="">Tous</option>
             {% for s in symbols %}
@@ -10,41 +34,48 @@
             {% endfor %}
         </select>
     </label>
-    <label>Type :
+    <label><span class="label">Type</span>
         <select name="trade_type">
             <option value="">Tous</option>
             <option value="BUY" {% if selected_type == "BUY" %}selected{% endif %}>Achat</option>
             <option value="SELL" {% if selected_type == "SELL" %}selected{% endif %}>Vente</option>
         </select>
     </label>
-    <label>Resultat :
+    <label><span class="label">Resultat</span>
         <select name="outcome">
             <option value="">Tous</option>
             <option value="gagnant" {% if selected_outcome == "gagnant" %}selected{% endif %}>Gagnant</option>
             <option value="perdant" {% if selected_outcome == "perdant" %}selected{% endif %}>Perdant</option>
         </select>
     </label>
-    <label>Du : <input type="date" name="date_from" value="{{ selected_date_from }}"></label>
-    <label>Au : <input type="date" name="date_to" value="{{ selected_date_to }}"></label>
-    <button type="submit">Filtrer</button>
-    <a href="/transactions/export.csv?symbol={{ selected_symbol }}&trade_type={{ selected_type }}&outcome={{ selected_outcome }}&date_from={{ selected_date_from }}&date_to={{ selected_date_to }}">Exporter CSV</a>
+    <label><span class="label">Du</span><input type="date" name="date_from" value="{{ selected_date_from }}"></label>
+    <label><span class="label">Au</span><input type="date" name="date_to" value="{{ selected_date_to }}"></label>
+    <button type="submit" class="act">Filtrer</button>
+    <a class="act" href="/transactions/export.csv?symbol={{ selected_symbol }}&trade_type={{ selected_type }}&outcome={{ selected_outcome }}&date_from={{ selected_date_from }}&date_to={{ selected_date_to }}">Exporter CSV</a>
 </form>
 
-<table>
-    <tr>
+<h2>Résultats officiels <small>{{ trades|length }} transaction{{ 's' if trades|length != 1 }} · la plus récente en tête</small></h2>
+<div class="panel scroll-x">
+<table class="board results">
+    <thead><tr>
         <th>Date/heure</th><th>Symbole</th><th>Type</th><th>Prix</th><th>Quantite</th>
         <th>Montant</th><th>Frais</th><th>Solde apres</th><th>Gain/Perte</th>
-    </tr>
+    </tr></thead>
+    <tbody>
     {% for t in trades %}
-    <tr>
-        <td>{{ t.timestamp | format_ts }}</td><td>{{ t.symbol }}</td><td>{{ t.side.value }}</td>
-        <td>{{ t.price }}</td><td>{{ t.quantity | format_qty(t.symbol) }}</td><td>{{ t.total_cost }}</td><td>{{ t.fee_amount }}</td>
-        <td>{{ t.cash_balance_after }}</td>
-        <td class="{% if t.realized_pnl is not none and t.realized_pnl >= 0 %}gain{% elif t.realized_pnl is not none %}loss{% endif %}">
-            {{ t.realized_pnl if t.realized_pnl is not none else "" }}
-        </td>
+    <tr style="--k: {{ loop.index0 }}">
+        <td>{{ t.timestamp | format_ts }}</td>
+        <td><span class="who" data-n="{{ rn.get(t.symbol, 11) }}"><span class="saddle sm">{{ rn.get(t.symbol, '·') }}</span>{{ t.symbol }}</span></td>
+        <td><span class="side {{ t.side.value }}">{{ t.side.value }}</span></td>
+        <td>{{ t.price|px }}</td><td>{{ t.quantity | format_qty(t.symbol) }}</td><td>{{ t.total_cost|px(2) }}</td><td>{{ t.fee_amount|px(4) }}</td>
+        <td>{{ t.cash_balance_after|px(2) }}</td>
+        <td class="num {% if t.realized_pnl is not none and t.realized_pnl >= 0 %}gain{% elif t.realized_pnl is not none %}loss{% endif %}">{{ t.realized_pnl|px(2) if t.realized_pnl is not none else "" }}</td>
     </tr>
+    {% else %}
+    <tr><td colspan="9"><p class="empty" style="margin:8px 0">Aucune transaction pour ces filtres.</p></td></tr>
     {% endfor %}
-    <tr><td colspan="6"><strong>Total</strong></td><td><strong>{{ total_fees }}</strong></td><td></td><td><strong>{{ total_realized_pnl }}</strong></td></tr>
+    </tbody>
+    <tfoot><tr><td colspan="6"><strong>Total</strong></td><td><strong>{{ total_fees|px(4) }}</strong></td><td></td><td class="num"><strong>{{ total_realized_pnl|px(2) }}</strong></td></tr></tfoot>
 </table>
+</div>
 {% endblock %}

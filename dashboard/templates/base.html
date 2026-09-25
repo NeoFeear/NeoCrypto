@@ -2,32 +2,145 @@
 <html lang="fr">
 <head>
     <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="theme-color" content="#0c0c0b">
     <title>{% block title %}crypto-sim{% endblock %}</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='4' fill='%230c0c0b'/%3E%3Crect x='7' y='7' width='18' height='18' rx='2' fill='%23d7261e'/%3E%3Cpath d='M14 12h3v9' stroke='%23fff' stroke-width='2.4' fill='none' stroke-linecap='square'/%3E%3C/svg%3E">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700;800&family=Barlow:wght@400;500;600&family=Doto:wght@600;800;900&display=swap">
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
     <style>
-        body { font-family: sans-serif; margin: 0; padding: 0 1.5rem 2rem; background: #0f1115; color: #e6e6e6; }
-        .banner { background: #b91c1c; color: white; text-align: center; padding: 0.5rem; font-weight: bold; margin: 0 -1.5rem 1rem; }
-        nav a { color: #93c5fd; margin-right: 1.5rem; text-decoration: none; font-weight: bold; }
-        nav { padding: 0.5rem 0 1rem; border-bottom: 1px solid #333; margin-bottom: 1.5rem; }
-        table { border-collapse: collapse; width: 100%; margin-bottom: 1.5rem; }
-        th, td { border: 1px solid #333; padding: 0.4rem 0.6rem; text-align: right; }
-        th:first-child, td:first-child { text-align: left; }
-        th { background: #1a1d24; }
-        .stat-tiles { display: flex; gap: 1rem; flex-wrap: wrap; margin-bottom: 1.5rem; }
-        .stat-tile { background: #1a1d24; border: 1px solid #333; border-radius: 6px; padding: 1rem 1.5rem; min-width: 160px; }
-        .stat-tile .label { font-size: 0.8rem; color: #999; }
-        .stat-tile .value { font-size: 1.4rem; font-weight: bold; }
-        .gain { color: #4ade80; }
-        .loss { color: #f87171; }
+        /* Tableau totalisateur : panneau noir mat, chiffres a ampoules ambre,
+           lettrage peint condense, casaques aux couleurs normalisees des courses. */
+        :root {
+            --board: #0c0c0b; --panel: #141412; --panel-2: #1b1b18; --rule: #2a2924; --rule-2: #3a3832;
+            --lamp: #ffb42c; --lamp-soft: rgba(255, 180, 44, .12); --lamp-off: rgba(255, 180, 44, .07);
+            --chalk: #eeede6; --muted: #9a978c; --gain: #62d67d; --loss: #ff6a5a;
+            --f-paint: "Barlow Condensed", "Arial Narrow", sans-serif;
+            --f-body: "Barlow", system-ui, sans-serif;
+            --f-lamp: "Doto", "Courier New", monospace;
+            --ease: cubic-bezier(.16, 1, .3, 1); --spring: cubic-bezier(.34, 1.4, .64, 1);
+            color-scheme: dark; accent-color: var(--lamp);
+        }
+        /* couleurs de tapis de selle (numero de partant = ordre de live.pairs) */
+        [data-n="1"] { --sc: #d7261e; --sn: #fff; } [data-n="2"] { --sc: #f1f0ea; --sn: #111; }
+        [data-n="3"] { --sc: #1f5fd6; --sn: #fff; } [data-n="4"] { --sc: #f5cf17; --sn: #111; }
+        [data-n="5"] { --sc: #14864d; --sn: #fff; } [data-n="6"] { --sc: #0b0b0b; --sn: #f5cf17; }
+        [data-n="7"] { --sc: #f57c1f; --sn: #111; } [data-n="8"] { --sc: #f5a8c8; --sn: #111; }
+        [data-n="9"] { --sc: #15b3a6; --sn: #111; } [data-n="10"] { --sc: #7a3fb8; --sn: #fff; }
+        [data-n="11"] { --sc: #9a9a9a; --sn: #111; } [data-n="12"] { --sc: #7ab83f; --sn: #111; }
+
+        * { box-sizing: border-box; }
+        html { scrollbar-color: var(--rule-2) var(--board); }
+        body { margin: 0; background: var(--board); color: var(--chalk); font: 400 15px/1.5 var(--f-body); -webkit-font-smoothing: antialiased;
+            font-variant-numeric: tabular-nums; }
+        ::selection { background: var(--lamp-soft); }
+        a { color: inherit; }
+        :focus-visible { outline: 2px solid var(--lamp); outline-offset: 2px; }
+        .wrap { max-width: 1240px; margin: 0 auto; padding: 0 24px 56px; }
+
+        .banner { position: sticky; top: 0; z-index: 30; background: #a3160e; color: #fff; text-align: center; padding: 7px 12px;
+            font: 700 13px/1.2 var(--f-paint); letter-spacing: .12em; text-transform: uppercase; border-bottom: 1px solid #000; }
+
+        .mast { display: flex; align-items: flex-end; gap: 28px; flex-wrap: wrap; padding: 22px 0 0; border-bottom: 1px solid var(--rule); }
+        .brand { padding-bottom: 14px; }
+        .brand b { display: block; font: 800 30px/1 var(--f-paint); letter-spacing: .04em; text-transform: uppercase; }
+        .brand small { display: block; margin-top: 6px; font: 600 12px var(--f-paint); letter-spacing: .16em; text-transform: uppercase; color: var(--muted); }
+        nav { display: flex; gap: 2px; align-self: stretch; align-items: flex-end; }
+        nav a { padding: 10px 16px 13px; font: 700 15px var(--f-paint); letter-spacing: .1em; text-transform: uppercase; text-decoration: none;
+            color: var(--muted); border-bottom: 3px solid transparent; margin-bottom: -1px; transition: color .2s; }
+        nav a:hover { color: var(--chalk); }
+        nav a[aria-current="page"] { color: var(--chalk); border-bottom-color: var(--lamp); }
+        .clock { margin-left: auto; padding-bottom: 14px; text-align: right; font: 600 12px var(--f-paint); letter-spacing: .12em; text-transform: uppercase; color: var(--muted); }
+        .clock .lamp { font-size: 20px; display: block; letter-spacing: .06em; }
+
+        /* chiffres a ampoules */
+        .lamp { font-family: var(--f-lamp); font-weight: 800; color: var(--lamp); letter-spacing: .02em; text-shadow: 0 0 10px rgba(255, 180, 44, .28);
+            white-space: nowrap; }
+        .lamp.gain { color: var(--gain); text-shadow: 0 0 10px rgba(98, 214, 125, .25); }
+        .lamp.loss { color: var(--loss); text-shadow: 0 0 10px rgba(255, 106, 90, .25); }
+        .lamp.chalk { color: var(--chalk); text-shadow: none; }
+        .label { font: 700 12px/1.2 var(--f-paint); letter-spacing: .14em; text-transform: uppercase; color: var(--muted); }
+        .gain { color: var(--gain); } .loss { color: var(--loss); }
+        h2 { margin: 40px 0 14px; font: 800 22px/1 var(--f-paint); letter-spacing: .08em; text-transform: uppercase; display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+        h2 small { font: 600 13px var(--f-paint); letter-spacing: .1em; color: var(--muted); }
+
+        /* casaque : carre de tapis de selle avec le numero peint */
+        .saddle { display: inline-grid; place-items: center; width: 30px; height: 30px; flex: none; border-radius: 3px; background: var(--sc, #444); color: var(--sn, #fff);
+            font: 800 17px/1 var(--f-paint); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .12), 0 2px 0 rgba(0, 0, 0, .5); }
+        .saddle.sm { width: 22px; height: 22px; font-size: 13px; }
+        [data-n="6"] .saddle, .saddle[data-n="6"] { box-shadow: inset 0 0 0 1.5px #f5cf17, 0 2px 0 rgba(0, 0, 0, .5); }
+
+        .panel { background: var(--panel); border: 1px solid var(--rule); border-radius: 4px; }
+        table.board { width: 100%; border-collapse: collapse; }
+        table.board th { padding: 10px 12px; text-align: right; font: 700 12px var(--f-paint); letter-spacing: .14em; text-transform: uppercase; color: var(--muted);
+            border-bottom: 1px solid var(--rule-2); white-space: nowrap; }
+        table.board td { padding: 11px 12px; text-align: right; border-bottom: 1px solid var(--rule); white-space: nowrap; }
+        table.board th:first-child, table.board td:first-child { text-align: left; }
+        table.board tr:last-child td { border-bottom: 0; }
+        .scroll-x { overflow-x: auto; }
+        .chips { display: flex; flex-wrap: wrap; gap: 8px; }
+        .chip { display: inline-flex; align-items: center; gap: 8px; padding: 5px 12px 5px 5px; border: 1px solid var(--rule-2); border-radius: 4px;
+            font: 700 14px var(--f-paint); letter-spacing: .06em; text-decoration: none; color: var(--muted); transition: border-color .2s, color .2s, background .2s; }
+        .chip:hover { color: var(--chalk); border-color: var(--muted); }
+        .chip[aria-current="true"] { color: var(--chalk); border-color: var(--lamp); background: var(--lamp-soft); }
+        .empty { padding: 28px; text-align: center; color: var(--muted); border: 1px dashed var(--rule-2); border-radius: 4px; }
+        code { font: 600 13px var(--f-lamp); color: var(--lamp); }
+
+        @keyframes light { 0% { opacity: 0; } 40% { opacity: .85; } 55% { opacity: .35; } 100% { opacity: 1; } }
+        @keyframes rise { from { opacity: 0; transform: translateY(12px); } }
+        .lamp { animation: light .9s steps(6, end) backwards; }
+        @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+        @media (max-width: 760px) {
+            .wrap { padding: 0 14px 40px; }
+            .mast { gap: 10px 18px; }
+            .brand b { font-size: 24px; }
+            .clock { margin-left: 0; text-align: left; order: 3; width: 100%; padding-bottom: 10px; }
+            nav { order: 4; width: 100%; overflow-x: auto; }
+            nav a { padding: 8px 12px 11px; }
+        }
     </style>
+    {% block head %}{% endblock %}
 </head>
 <body>
+    <!--
+    THESIS: le portefeuille est une course : chaque paire est un partant avec sa casaque, classe en direct par rendement depuis son vrai depart. Refuse le dashboard crypto neon a tuiles.
+    OWN-WORLD: tableau totalisateur d'hippodrome : noir mat, chiffres a ampoules ambre (Doto), lettrage peint condense (Barlow Condensed), couleurs normalisees des tapis de selle 1-9, filets de 1 px.
+    STORY: voir qui mene et de combien, lire la forme de chaque partant, ouvrir un partant pour son detail, ses risques et ses transactions.
+    FIRST VIEWPORT: bandeau simulation ; totalisateur (engage, valeur, rendement global en grandes ampoules, jour de course) ; la piste des couloirs ; le tableau des partants commence sous la ligne.
+    FORM: tote board, candidat 5/7, seed 3366a44f.
+    FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, DESIGN.md, and every shipping raster carrying its provenance
+    -->
     <div class="banner">⚠ SIMULATION — Aucun argent réel, aucun ordre réel envoyé</div>
-    <nav>
-        <a href="/{% if active_symbol %}?symbol={{ active_symbol }}{% endif %}">Principal</a>
-        <a href="/analyses{% if active_symbol %}?symbol={{ active_symbol }}{% endif %}">Analyses</a>
-        <a href="/transactions">Transactions</a>
-    </nav>
-    {% block content %}{% endblock %}
+    <div class="wrap">
+        {% set page = page|default('principal') %}
+        <header class="mast">
+            <div class="brand"><b>crypto-sim</b><small>Tableau totalisateur · trading papier</small></div>
+            <nav aria-label="Pages">
+                <a href="/{% if active_symbol %}?symbol={{ active_symbol }}{% endif %}" {% if page == 'principal' %}aria-current="page"{% endif %}>Principal</a>
+                <a href="/analyses{% if active_symbol %}?symbol={{ active_symbol }}{% endif %}" {% if page == 'analyses' %}aria-current="page"{% endif %}>Analyses</a>
+                <a href="/transactions" {% if page == 'transactions' %}aria-current="page"{% endif %}>Transactions</a>
+            </nav>
+            {% block clock %}{% endblock %}
+        </header>
+        {% block content %}{% endblock %}
+    </div>
+    <script>
+    if (window.Chart) {
+        Chart.defaults.color = "#9a978c";
+        Chart.defaults.borderColor = "#2a2924";
+        Chart.defaults.font.family = "Barlow, system-ui, sans-serif";
+        Chart.defaults.plugins.legend.display = false;
+        Chart.defaults.animation.duration = 1100;
+        Chart.defaults.animation.easing = "easeOutQuart";
+        Chart.defaults.elements.point.radius = 0;
+        Chart.defaults.plugins.tooltip.backgroundColor = "#1b1b18";
+        Chart.defaults.plugins.tooltip.borderColor = "#3a3832";
+        Chart.defaults.plugins.tooltip.borderWidth = 1;
+        if (matchMedia("(prefers-reduced-motion: reduce)").matches) Chart.defaults.animation = false;
+    }
+    </script>
+    {% block scripts %}{% endblock %}
 </body>
 </html>
